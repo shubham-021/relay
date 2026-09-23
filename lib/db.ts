@@ -1096,6 +1096,106 @@ export function getWatchedPosition(userId: number, accountId: number, torrentId:
   }
 }
 
+export type NextEpisode = {
+  account_id: number;
+  torrent_id: number;
+  file_id: number;
+  season_number: number | null;
+  episode_number: number | null;
+  filename: string;
+  episode_title?: string | null;
+  show_title?: string | null;
+};
+
+// Resolve the episode that follows the given TV file (keyed off the current
+// file itself, not a completed watch row). Algorithm mirrors findNext inside
+// getContinueWatching. Returns null for movies, missing rows, or the last
+// episode of a show.
+export function findNextEpisodeForFile(
+  userId: number,
+  accountId: number,
+  torrentId: number,
+  fileId: number
+): NextEpisode | null {
+  if (!db) return null;
+  try {
+    const current = db
+      .query(
+        `SELECT account_id, torrent_id, file_id, tmdb_id, show_title, raw_title,
+                media_type, season_number, episode_number, episode_end_number, filename
+         FROM remote_list_cache
+         WHERE account_id = ? AND torrent_id = ? AND file_id = ?`
+      )
+      .get(accountId, torrentId, fileId) as any;
+
+    if (!current || current.media_type !== "tv" || current.episode_number == null) {
+      return null;
+    }
+
+    const showKey = (row: any) =>
+      row.tmdb_id != null
+        ? `tmdb_${row.tmdb_id}`
+        : `show_${String(row.show_title || row.raw_title || "").toLowerCase()}`;
+
+    const currentKey = showKey(current);
+
+    // Same TV-files query as getContinueWatching (files + user_watched hidden flag)
+    const tvFiles = db
+      .query(
+        `SELECT r.account_id, r.torrent_id, r.file_id, r.tmdb_id, r.show_title, r.raw_title,
+                r.media_type, r.season_number, r.episode_number, r.episode_end_number, r.filename,
+                e.episode_title,
+                w.hidden AS hidden
+         FROM remote_list_cache r
+         JOIN user_accounts ua ON ua.account_id = r.account_id
+         LEFT JOIN tv_episodes e
+           ON r.tmdb_id = e.show_tmdb_id AND r.season_number = e.season_number AND r.episode_number = e.episode_number
+         LEFT JOIN user_watched w
+           ON w.user_id = ? AND w.account_id = r.account_id AND w.torrent_id = r.torrent_id AND w.file_id = r.file_id
+         WHERE ua.user_id = ? AND r.media_type = 'tv'`
+      )
+      .all(userId, userId) as any[];
+
+    const files = tvFiles.filter((f) => showKey(f) === currentKey);
+
+    const curSeason = current.season_number ?? 1;
+    const nextEp = (current.episode_end_number ?? current.episode_number) + 1;
+
+    // Candidate 1: same season, range covers nextEp (handles multi-episode files)
+    let file = files.find(
+      (f) =>
+        (f.season_number ?? 1) === curSeason &&
+        (f.episode_number ?? 0) <= nextEp &&
+        (f.episode_end_number ?? f.episode_number ?? 0) >= nextEp &&
+        !f.hidden
+    );
+    // Candidate 2: first non-hidden file of the next season
+    if (!file) {
+      file = files.find(
+        (f) =>
+          (f.season_number ?? 1) === curSeason + 1 &&
+          (f.episode_number ?? 0) === 1 &&
+          !f.hidden
+      );
+    }
+    if (!file) return null;
+
+    return {
+      account_id: file.account_id,
+      torrent_id: file.torrent_id,
+      file_id: file.file_id,
+      season_number: file.season_number ?? null,
+      episode_number: file.episode_number ?? null,
+      filename: file.filename,
+      episode_title: file.episode_title ?? null,
+      show_title: file.show_title ?? current.show_title ?? null,
+    };
+  } catch (e) {
+    console.error("findNextEpisodeForFile error:", e);
+    return null;
+  }
+}
+
 export function getContinueWatching(userId: number, limit = 5) {
   if (!db) return [];
   try {

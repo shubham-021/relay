@@ -310,7 +310,7 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
             >
               <Copy size={15} />
             </Button>
-            <Button
+            {/* <Button
               size="icon"
               variant="secondary"
               onClick={handleDownload}
@@ -318,7 +318,7 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
               title="Download File"
             >
               <Download size={15} />
-            </Button>
+            </Button> */}
             {LOCAL_DAEMON_PLAYERS.includes(playerProtocol) && (
               <Button
                 size="icon"

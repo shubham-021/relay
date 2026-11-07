@@ -73,6 +73,11 @@ function authenticate(request: Request): number | null {
 }
 
 export async function POST(request: Request) {
+    console.log("[MCP] [POST]", {
+        auth: request.headers.get("authorization") ? "present" : "missing",
+        session: request.headers.get("mcp-session-id"),
+    });
+
     const userId = authenticate(request);
     if (userId === null) {
         return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
@@ -101,6 +106,7 @@ export async function POST(request: Request) {
 
     const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
+        enableJsonResponse: true,
         onsessioninitialized: (id) => {
             sessions.set(id, { transport, userId, createdAt: Date.now() });
         },

@@ -16,6 +16,22 @@ export interface AuthCodeEntry {
 // In-memory store for pending authorization codes (5 min TTL)
 export const authCodes = new Map<string, AuthCodeEntry>();
 
+function getBaseUrl(request: Request): string {
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+    const host = forwardedHost || request.headers.get("host");
+
+    if (host && !host.includes("localhost") && !host.includes("127.0.0.1")) {
+        const proto = request.headers.get("x-forwarded-proto") || "https";
+        return `${proto}://${host}`;
+    }
+
+    if (process.env.PUBLIC_URL) {
+        return process.env.PUBLIC_URL.replace(/\/+$/, "");
+    }
+
+    return `https://${host || "localhost:3000"}`;
+}
+
 export async function GET(request: Request) {
     const url = new URL(request.url);
     const responseType = url.searchParams.get("response_type");
@@ -47,8 +63,8 @@ export async function GET(request: Request) {
     // Check user session in Relay
     const session = await getSession();
     if (!session.userId) {
-        // Redirect to login, with return path
-        const loginUrl = new URL("/login", url.origin);
+        const baseUrl = getBaseUrl(request);
+        const loginUrl = new URL("/login", baseUrl);
         loginUrl.searchParams.set("redirect", `${url.pathname}${url.search}`);
         return NextResponse.redirect(loginUrl.toString());
     }

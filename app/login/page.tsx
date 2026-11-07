@@ -2,12 +2,14 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
 import { LoginForm } from "@/components/login-form";
 
-export default async function LoginPage() {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ redirect?: string }> }) {
   const session = await getSession();
+  const params = await searchParams;
+  const destination = params?.redirect || "/";
 
   // If already logged in, redirect to home
   if (session.userId) {
-    redirect("/");
+    redirect(destination);
   }
 
   return (

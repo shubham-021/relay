@@ -1,7 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp";
 import { z } from "zod";
 import type { McpContext } from "./context";
-import { getMoviesForUser, getTvShowsForUser, getTvShowDetailsForUser, getContinueWatching, findNextEpisodeForFile, verifyUserAccountAccess, getOtherFilesForUser, getAccountsByUserId } from "@/lib/db";
+import {
+    getMoviesForUser,
+    getTvShowsForUser,
+    getTvShowDetailsForUser,
+    getContinueWatching,
+    findNextEpisodeForFile,
+    verifyUserAccountAccess,
+    getOtherFilesForUser,
+    getAccountsByUserId,
+    getWatchedPosition,
+} from "@/lib/db";
 import { getValidAccessToken, requestCdnLink, checkTorrentCached, createTorrent } from "@/lib/torbox";
 import { mintPlayToken } from "@/lib/crypto";
 import { SOURCES } from "@/tor_sources/registry";
@@ -287,6 +297,98 @@ export function createMcpServer(ctx: McpContext): McpServer {
         }
     });
 
+    server.registerTool("play_media", {
+        title: "Play Media via Aemond",
+        description: "Launch playback of a movie or episode in the user's local video player (mpv, vlc, iina) via the Relay Aemond daemon (runs on localhost:9070). Automatically resumes from last watched position.",
+        inputSchema: {
+            account_id: z.number().int().positive().describe("TorBox account ID"),
+            torrent_id: z.number().int().nonnegative().describe("Torrent ID"),
+            file_id: z.number().int().nonnegative().describe("File ID"),
+            player: z.enum(["mpv", "vlc", "iina"]).optional().describe("Video player to launch (default: mpv)"),
+            daemon_url: z.string().optional().describe("Aemond daemon base URL (default: http://localhost:9070)"),
+        },
+    }, async ({ account_id, torrent_id, file_id, player, daemon_url }) => {
+        if (!verifyUserAccountAccess(ctx.userId, account_id)) {
+            return { content: [{ type: "text", text: "Account not found or access denied" }], isError: true };
+        }
+        try {
+            const token = await getValidAccessToken(account_id);
+            const url = await requestCdnLink(torrent_id, file_id, token);
+            const playToken = mintPlayToken({
+                userId: ctx.userId,
+                accountId: account_id,
+                torrentId: torrent_id,
+                fileId: file_id,
+            });
+            // Resume position check
+            const watched = getWatchedPosition(ctx.userId, account_id, torrent_id, file_id);
+            let startTime = "0";
+            if (
+                watched &&
+                !watched.completed &&
+                watched.position_seconds > 0 &&
+                watched.duration_seconds &&
+                watched.position_seconds < watched.duration_seconds - 10
+            ) {
+                startTime = String(Math.floor(watched.position_seconds));
+            }
+            const activePlayer = player ?? "mpv";
+            const daemonEndpoint = `${daemon_url ?? "http://localhost:9070"}/play`;
+            const reportBase = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/+$/, "") : "http://localhost:3000";
+            try {
+                const daemonRes = await fetch(daemonEndpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        player: activePlayer,
+                        url,
+                        startTime,
+                        torrent_id: torrent_id,
+                        file_id: file_id,
+                        account_id: account_id,
+                        token: playToken,
+                        reportUrl: `${reportBase}/api/progress`,
+                    }),
+                });
+                if (daemonRes.ok) {
+                    const result = {
+                        success: true,
+                        player: activePlayer,
+                        startTime,
+                        message: `Playback launched in ${activePlayer.toUpperCase()} via Aemond daemon`,
+                    };
+                    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+                }
+                const errText = await daemonRes.text();
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            success: false,
+                            error: `Aemond daemon returned HTTP ${daemonRes.status}: ${errText}`,
+                            fallbackUrl: url,
+                        }, null, 2),
+                    }],
+                    isError: true,
+                };
+            } catch (daemonErr) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            success: false,
+                            error: `Could not connect to Aemond daemon at ${daemonEndpoint}. Ensure Relay Aemond is running on the machine.`,
+                            fallbackUrl: url,
+                        }, null, 2),
+                    }],
+                    isError: true,
+                };
+            }
+        } catch (e) {
+            return toolError(e);
+        }
+    });
+
     server.registerPrompt("system", {
         title: "Relay System Overview",
         description: "Describes what Relay is and the recommended workflow for interacting with it.",
@@ -309,6 +411,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
                     "7. add_torrent: add a magnet link to TorBox (prefer cached-only unless user says otherwise)",
                     "8. sync_library: refresh the library after adding new torrents",
                     "9. get_stream_link: generate a CDN URL for streaming a specific file",
+                    "10. play_media: launch media directly in the user's local player (mpv, vlc, iina) via Aemond daemon",
                     "",
                     "Always call list_accounts first if you don't know the account_id.",
                     "After add_torrent, call sync_library so the new files appear in the library.",

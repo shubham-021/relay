@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Loader2, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
@@ -30,6 +30,8 @@ interface LoginFormProps {
 
 export function LoginForm({ onSuccess }: LoginFormProps = {}) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -82,7 +84,8 @@ export function LoginForm({ onSuccess }: LoginFormProps = {}) {
       if (onSuccess) {
         onSuccess();
       } else {
-        router.push("/");
+        const destination = searchParams.get("redirect") || "/";
+        router.push(destination);
         router.refresh();
       }
     } catch {

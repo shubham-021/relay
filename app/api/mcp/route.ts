@@ -8,8 +8,8 @@ export const dynamic = "force-dynamic";
 const CORS_HEADERS: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, mcp-session-id, mcp-protocol-version",
-    "Access-Control-Expose-Headers": "mcp-session-id",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, mcp-session-id, Mcp-Session-Id, mcp-protocol-version, Mcp-Protocol-Version",
+    "Access-Control-Expose-Headers": "mcp-session-id, Mcp-Session-Id, mcp-protocol-version, Mcp-Protocol-Version",
 };
 
 function withCors(response: Response): Response {
@@ -17,11 +17,21 @@ function withCors(response: Response): Response {
         for (const [key, value] of Object.entries(CORS_HEADERS)) {
             response.headers.set(key, value);
         }
+
+        const sid = response.headers.get("mcp-session-id");
+        if (sid && !response.headers.get("Mcp-Session-Id")) {
+            response.headers.set("Mcp-Session-Id", sid);
+        }
         return response;
     } catch {
         const headers = new Headers(response.headers);
         for (const [key, value] of Object.entries(CORS_HEADERS)) {
             headers.set(key, value);
+        }
+
+        const sid = headers.get("mcp-session-id");
+        if (sid && !headers.get("Mcp-Session-Id")) {
+            headers.set("Mcp-Session-Id", sid);
         }
 
         return new Response(response.body, {
@@ -73,13 +83,14 @@ function authenticate(request: Request): number | null {
 }
 
 export async function POST(request: Request) {
-    console.log("[MCP] [POST]", {
-        auth: request.headers.get("authorization") ? "present" : "missing",
-        session: request.headers.get("mcp-session-id"),
-    });
+    // console.log("[MCP] [POST]", {
+    //     auth: request.headers.get("authorization") ? "present" : "missing",
+    //     session: request.headers.get("mcp-session-id"),
+    // });
 
     const userId = authenticate(request);
     if (userId === null) {
+        // console.log("[MCP] [POST] Auth failed -> returning 401");
         return withCors(Response.json({ error: "unauthorized" }, { status: 401 }));
     }
 
@@ -89,16 +100,19 @@ export async function POST(request: Request) {
     if (sessionId) {
         const session = sessions.get(sessionId);
         if (!session || session.userId !== userId) {
+            // console.log("[MCP] [POST] Session not found:", sessionId);
             return withCors(Response.json({ error: "Session not found" }, { status: 404 }));
         }
 
         const res = await session.transport.handleRequest(req);
+        // console.log("[MCP] [POST] Session hit -> status:", res.status);
         return withCors(res);
     }
 
     // new session
     const user = getUserById(userId);
     if (!user) {
+        console.log("[MCP] [POST] User not found for id:", userId);
         return withCors(Response.json({ error: "User not found" }, { status: 404 }));
     }
 
@@ -108,9 +122,11 @@ export async function POST(request: Request) {
         sessionIdGenerator: () => crypto.randomUUID(),
         enableJsonResponse: true,
         onsessioninitialized: (id) => {
+            console.log("[MCP] [SESSION CREATED]", id);
             sessions.set(id, { transport, userId, createdAt: Date.now() });
         },
         onsessionclosed: (id) => {
+            console.log("[MCP] [SESSION CLOSED]", id);
             sessions.delete(id);
         }
     });
@@ -118,8 +134,14 @@ export async function POST(request: Request) {
     const server = createMcpServer({ userId });
     await server.connect(transport);
 
-    const res = await transport.handleRequest(req);
-    return withCors(res);
+    try {
+        const res = await transport.handleRequest(req);
+        // console.log("[MCP] [POST] Handshake response -> status:", res.status, "content-type:", res.headers.get("content-type"), "mcp-session-id:", res.headers.get("mcp-session-id"));
+        return withCors(res);
+    } catch (err) {
+        console.error("[MCP] [POST] transport.handleRequest threw error:", err);
+        return withCors(Response.json({ error: "Internal server error" }, { status: 500 }));
+    }
 }
 
 export async function GET(request: Request) {

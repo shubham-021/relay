@@ -1,4 +1,4 @@
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 
 const secret = process.env.SESSION_SECRET ?? "";
 
@@ -22,10 +22,6 @@ export function validateMcpApiKey(token: string): number | null {
     const b = Buffer.from(provided, "hex");
     if (a.length !== b.length) return null;
 
-    for (let i = 0; i < a.length; i++) {
-        if (a[i] !== b[i]) return null;
-    }
-
-    return null;
+    return timingSafeEqual(a, b) ? userId : null;
 }
 

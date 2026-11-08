@@ -44,7 +44,12 @@ export async function GET(request: NextRequest) {
       completed: !!row.completed,
     }));
 
-    return NextResponse.json({ items });
+    return NextResponse.json({ items }, {
+      headers: {
+        Etag: etag,
+        "Cache-Control": "private, no-cache"
+      }
+    });
   } catch (error) {
     console.error("Movies API error:", error);
     return NextResponse.json({ error: "Failed to fetch movies" }, { status: 500 });

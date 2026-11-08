@@ -19,7 +19,7 @@ import {
 import { AccountBadge } from "@/components/account-badge";
 import { toast } from "sonner";
 import { useFileStore } from "@/lib/store";
-import { getTabItems, setTabAccountData, removeAccountFromCache, clearLibraryCache } from "@/lib/library-cache";
+import { getCachedData, setCachedData, clearLibraryCache } from "@/lib/library-cache";
 
 interface FileBrowserProps {
   playerProtocol: string;
@@ -78,134 +78,105 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
 
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
-
   const activeAccountIdRef = useRef(activeAccountId);
   activeAccountIdRef.current = activeAccountId;
 
   const applyTabItems = useCallback((tab: "movies" | "tv" | "other", items: any[]) => {
     if (activeTabRef.current !== tab) return;
-
     if (tab === "movies") setMovies(items);
     else if (tab === "tv") setTvShows(items);
     else if (tab === "other") setOtherFiles(items);
   }, []);
 
-  const syncLibrary = useCallback(
+  const loadLibrary = useCallback(
     async (forceRefresh = false) => {
       if (!hasAccounts) return;
       const currentTab = activeTabRef.current;
       const currentAccountId = activeAccountIdRef.current;
+      const cacheKey = currentAccountId ? `${currentTab}:${currentAccountId}` : currentTab;
+
+      // 1. Instant render from local IndexedDB cache
+      const cached = await getCachedData<any[]>(cacheKey);
+      if (cached.data && cached.data.length > 0 && !forceRefresh) {
+        applyTabItems(currentTab, cached.data);
+        setIsLoading(false);
+      } else {
+        setIsLoading(true);
+      }
 
       try {
+        // 2. Conditional HTTP fetch using If-None-Match ETag
+        const params = new URLSearchParams();
+        if (currentAccountId) params.set("account_id", currentAccountId.toString());
+        const queryString = params.toString() ? `?${params.toString()}` : "";
+        const endpoint = `/api/library/${currentTab}${queryString}`;
 
-        // 1. Instant read from local cache
-        const cached = await getTabItems(currentTab, currentAccountId);
-        if (cached.items.length > 0 && !forceRefresh) {
-          applyTabItems(currentTab, cached.items);
-          setIsLoading(false);
-        } else {
-          setIsLoading(true);
+        const headers: Record<string, string> = {};
+        if (cached.etag && !forceRefresh) {
+          headers["If-None-Match"] = cached.etag;
         }
 
-        // 2. Query sync status for all accounts
-        const syncRes = await fetch("/api/library/sync-status");
-        if (syncRes.status === 401) {
+        const res = await fetch(endpoint, { headers });
+
+        if (res.status === 401) {
           await clearLibraryCache();
           window.location.href = "/login";
           return;
         }
 
-        if (!syncRes.ok) throw new Error("Failed to fetch sync status");
-
-        const { accounts: serverAccounts } = (await syncRes.json()) as {
-          accounts: { id: number; last_synced_at: string | null; is_active: boolean }[];
-        };
-
-        if (serverAccounts) {
-          setAccounts(serverAccounts as any);
+        // 3a. Cache is completely fresh (304 Not Modified) - nothing more to do!
+        if (res.status === 304) {
+          setIsLoading(false);
+          return;
         }
 
-        // Clean up deleted accounts from cache
-        const serverAccountIds = new Set(serverAccounts.map((a) => a.id));
-        for (const cachedId of Object.keys(cached.syncedTimestamps).map(Number)) {
-          if (!serverAccountIds.has(cachedId)) {
-            await removeAccountFromCache(cachedId);
-          }
-        }
+        // 3b. Data has updated (200 OK) - update UI and write fresh data + ETag to IndexedDB
+        if (res.ok) {
+          const json = await res.json();
+          const items = currentTab === "tv" ? json.shows || [] : json.items || [];
+          const newEtag = res.headers.get("etag");
 
-        // 3. Identify stale accounts that need fresh data
-        const staleAccounts = serverAccounts.filter((acc) => {
-          if (!acc.is_active) return false;
-          const cachedSync = cached.syncedTimestamps[acc.id];
-          return forceRefresh || !cachedSync || cachedSync !== acc.last_synced_at;
-        });
-
-
-        // 4. Fetch only stale accounts in parallel
-        if (staleAccounts.length > 0) {
-          await Promise.all(
-            staleAccounts.map(async (acc) => {
-              const endpoint =
-                currentTab === "movies"
-                  ? `/api/library/movies?account_id=${acc.id}`
-                  : currentTab === "tv"
-                    ? `/api/library/tv?account_id=${acc.id}`
-                    : `/api/library/other?account_id=${acc.id}`;
-
-              const res = await fetch(endpoint, { cache: "no-store" });
-              if (res.ok) {
-                const data = await res.json();
-                const freshItems =
-                  currentTab === "movies" || currentTab === "other"
-                    ? data.items || []
-                    : data.shows || [];
-                await setTabAccountData(currentTab, acc.id, acc.last_synced_at, freshItems);
-              }
-            })
-          );
-
-          // Update UI with newly cached data
-          const updated = await getTabItems(currentTab, activeAccountIdRef.current);
-          applyTabItems(currentTab, updated.items);
+          applyTabItems(currentTab, items);
+          await setCachedData(cacheKey, newEtag, items);
         }
       } catch (e) {
-        console.error("Library sync error:", e);
-        toast.error("Failed to synchronize library");
+        console.error("Library load error:", e);
+        toast.error("Failed to load library content");
       } finally {
         setIsLoading(false);
       }
     },
-    [hasAccounts, setAccounts, applyTabItems]
+    [hasAccounts, applyTabItems]
   );
 
-  // Sync on tab or active account change (calls syncLibrary on mount and on tab/account switches)
+  // Load immediately on mount, tab switch, or account filter change
   useEffect(() => {
-    syncLibrary();
-  }, [activeTab, activeAccountId, syncLibrary]);
+    loadLibrary();
+  }, [activeTab, activeAccountId, loadLibrary]);
 
   useEffect(() => {
     if (accountsProp.length > 0) setAccounts(accountsProp);
   }, [accountsProp, setAccounts]);
 
-  // Sync on window focus (user switches back to tab)
+  // Revalidate on window focus (user switches back to tab)
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        syncLibrary();
+        loadLibrary();
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [syncLibrary]);
+  }, [loadLibrary]);
 
-  // Re-sync on custom torrent update event
+  // Force re-fetch on torrent updates
   useEffect(() => {
     const handleFilesUpdated = () => {
-      syncLibrary(true);
+      loadLibrary(true);
     };
     window.addEventListener("torrent-files-updated", handleFilesUpdated);
     return () => window.removeEventListener("torrent-files-updated", handleFilesUpdated);
-  }, [syncLibrary]);
+  }, [loadLibrary]);
 
 
   useEffect(() => {

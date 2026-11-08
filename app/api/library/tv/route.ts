@@ -32,7 +32,12 @@ export async function GET(request: NextRequest) {
       start_year: row.start_year,
     }));
 
-    return NextResponse.json({ shows });
+    return NextResponse.json({ shows }, {
+      headers: {
+        Etag: etag,
+        "Cache-Control": "private, no-cache"
+      }
+    });
   } catch (error) {
     console.error("TV Shows API error:", error);
     return NextResponse.json({ error: "Failed to fetch TV shows" }, { status: 500 });

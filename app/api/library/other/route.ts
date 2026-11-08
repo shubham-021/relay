@@ -38,7 +38,12 @@ export async function GET(request: NextRequest) {
       has_thumbnail: !!row.has_thumbnail,
     }));
 
-    return NextResponse.json({ items });
+    return NextResponse.json({ items }, {
+      headers: {
+        Etag: etag,
+        "Cache-Control": "private, no-cache"
+      }
+    });
   } catch (error) {
     console.error("Other Files API error:", error);
     return NextResponse.json({ error: "Failed to fetch uncategorized files" }, { status: 500 });

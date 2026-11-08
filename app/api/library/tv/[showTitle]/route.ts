@@ -79,6 +79,11 @@ export async function GET(
     return NextResponse.json({
       show: showInfo,
       seasons,
+    }, {
+      headers: {
+        Etag: etag,
+        "Cache-Control": "private, no-cache"
+      }
     });
   } catch (error) {
     console.error("TV Show Detail API error:", error);

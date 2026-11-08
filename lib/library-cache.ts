@@ -4,12 +4,10 @@ const DB_NAME = "relay_lib_cache";
 const DB_VERSION = 1;
 const STORE_NAME = "tab_cache";
 
-export interface AccountCacheData<T = any> {
-    lastSyncedAt: string | null;
-    items: T[];
+interface CacheRecord<T = any> {
+    etag: string | null;
+    data: T;
 }
-
-export type TabCache<T = any> = Record<number, AccountCacheData<T>>;
 
 let dbInstance: IDBDatabase | null = null;
 let dbPromise: Promise<IDBDatabase | null> | null = null;
@@ -50,7 +48,7 @@ function openDB(): Promise<IDBDatabase | null> {
             };
 
             req.onblocked = () => {
-                console.warn("[IndexedDB] Database open blocked");
+                console.warn("[IndexedDB] Open blocked");
             };
         } catch (e) {
             console.error("[IndexedDB] Open exception:", e);
@@ -62,143 +60,68 @@ function openDB(): Promise<IDBDatabase | null> {
     return dbPromise;
 }
 
-// Retrieves the full cached map for a tab ("movies", "tv", "other").
-export async function getTabCache<T = any>(tab: string): Promise<TabCache<T> | null> {
+// retrieves cached data and its associated ETag
+export async function getCachedData<T = any>(
+    key: string
+): Promise<{ etag: string | null; data: T | null }> {
     const db = await openDB();
-    if (!db) return null;
+    if (!db) return { etag: null, data: null };
 
     return new Promise((resolve) => {
         try {
             const tx = db.transaction(STORE_NAME, "readonly");
             const store = tx.objectStore(STORE_NAME);
-            const req = store.get(tab);
+            const req = store.get(key);
 
-            req.onsuccess = () => resolve(req.result || null);
+            req.onsuccess = () => {
+                const record = req.result as CacheRecord<T> | undefined;
+                resolve({
+                    etag: record?.etag || null,
+                    data: record?.data || null,
+                });
+            };
+
             req.onerror = () => {
-                console.error(`[IndexedDB] Get error for ${tab}:`, req.error);
-                resolve(null);
+                console.error(`[IndexedDB] Get error for ${key}:`, req.error);
+                resolve({ etag: null, data: null });
             };
         } catch (e) {
-            console.error(`[IndexedDB] Get exception for ${tab}:`, e);
-            resolve(null);
+            console.error(`[IndexedDB] Get exception for ${key}:`, e);
+            resolve({ etag: null, data: null });
         }
     });
 }
 
-// Returns cached items and a map of { [accountId]: lastSyncedAt }.
-export async function getTabItems<T = any>(
-    tab: string,
-    accountId?: number | null
-): Promise<{ items: T[]; syncedTimestamps: Record<number, string | null> }> {
-    const cache = await getTabCache<T>(tab);
-    if (!cache) return { items: [], syncedTimestamps: {} };
-
-    const syncedTimestamps: Record<number, string | null> = {};
-    for (const [idStr, data] of Object.entries(cache)) {
-        syncedTimestamps[Number(idStr)] = data.lastSyncedAt;
-    }
-
-    if (accountId) {
-        return {
-            items: cache[accountId]?.items || [],
-            syncedTimestamps,
-        };
-    }
-
-    const allItems: T[] = [];
-    for (const data of Object.values(cache)) {
-        if (Array.isArray(data.items)) {
-            allItems.push(...data.items);
-        }
-    }
-
-    return { items: allItems, syncedTimestamps };
-}
-
-// Atomically updates the cached items and lastSyncedAt for an account within a tab.
-// Performs read-modify-write inside a single readwrite transaction to prevent race conditions.
-export async function setTabAccountData<T = any>(
-    tab: string,
-    accountId: number,
-    lastSyncedAt: string | null,
-    items: T[]
+// Stores data alongside its ETag in IndexedDB
+export async function setCachedData<T = any>(
+    key: string,
+    etag: string | null,
+    data: T
 ): Promise<void> {
     const db = await openDB();
     if (!db) return;
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         try {
             const tx = db.transaction(STORE_NAME, "readwrite");
             const store = tx.objectStore(STORE_NAME);
-
-            const getReq = store.get(tab);
-
-            getReq.onsuccess = () => {
-                const current: TabCache<T> = getReq.result || {};
-                current[accountId] = {
-                    lastSyncedAt,
-                    items,
-                };
-
-                const putReq = store.put(current, tab);
-                putReq.onerror = () => {
-                    console.error(`[IndexedDB] Put error for ${tab}:`, putReq.error);
-                };
-            };
-
-            getReq.onerror = () => {
-                console.error(`[IndexedDB] Transaction get error for ${tab}:`, getReq.error);
-            };
+            const record: CacheRecord<T> = { etag, data };
+            store.put(record, key);
 
             tx.oncomplete = () => {
-                console.log(`[IndexedDB] Successfully saved ${items.length} items for ${tab} (account: ${accountId})`);
+                console.log(`[IndexedDB] Stored '${key}' (ETag: ${etag || "none"})`);
                 resolve();
             };
 
             tx.onerror = () => {
-                console.error(`[IndexedDB] Transaction error for ${tab}:`, tx.error);
-                reject(tx.error);
-            };
-
-            tx.onabort = () => {
-                console.error(`[IndexedDB] Transaction aborted for ${tab}`);
-                reject(new Error("Transaction aborted"));
+                console.error(`[IndexedDB] Put error for ${key}:`, tx.error);
+                resolve();
             };
         } catch (e) {
-            console.error(`[IndexedDB] Set exception for ${tab}:`, e);
-            reject(e);
+            console.error(`[IndexedDB] Set exception for ${key}:`, e);
+            resolve();
         }
     });
-}
-
-// Removes an account from all tabs in the cache
-export async function removeAccountFromCache(accountId: number): Promise<void> {
-    const tabs = ["movies", "tv", "other"];
-    const db = await openDB();
-    if (!db) return;
-
-    for (const tab of tabs) {
-        await new Promise<void>((resolve) => {
-            try {
-                const tx = db.transaction(STORE_NAME, "readwrite");
-                const store = tx.objectStore(STORE_NAME);
-                const getReq = store.get(tab);
-
-                getReq.onsuccess = () => {
-                    const current = getReq.result;
-                    if (current && current[accountId]) {
-                        delete current[accountId];
-                        store.put(current, tab);
-                    }
-                };
-
-                tx.oncomplete = () => resolve();
-                tx.onerror = () => resolve();
-            } catch {
-                resolve();
-            }
-        });
-    }
 }
 
 // Clears all cached library data from IndexedDB
@@ -213,7 +136,7 @@ export async function clearLibraryCache(): Promise<void> {
             store.clear();
 
             tx.oncomplete = () => {
-                console.log("[IndexedDB] Library cache cleared");
+                console.log("[IndexedDB] Cache cleared");
                 resolve();
             };
             tx.onerror = () => resolve();

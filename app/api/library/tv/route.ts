@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { getSession } from "@/lib/session";
 import { getTvShowsForUser } from "@/lib/db";
+import { getLibEtag, validateETag } from "@/lib/library-etag";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,10 @@ export async function GET(request: NextRequest) {
 
     const accountIdParam = request.nextUrl.searchParams.get("account_id");
     const accountId = accountIdParam ? parseInt(accountIdParam, 10) : undefined;
+
+    const etag = getLibEtag(session.userId, accountId);
+    const notModified = validateETag(request, etag);
+    if (notModified) return notModified;
 
     const rawShows = getTvShowsForUser(session.userId, accountId);
 

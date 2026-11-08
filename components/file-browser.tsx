@@ -19,6 +19,7 @@ import {
 import { AccountBadge } from "@/components/account-badge";
 import { toast } from "sonner";
 import { useFileStore } from "@/lib/store";
+import { getTabItems, setTabAccountData, removeAccountFromCache, clearLibraryCache } from "@/lib/library-cache";
 
 interface FileBrowserProps {
   playerProtocol: string;
@@ -75,49 +76,136 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
   const [tvShows, setTvShows] = useState<any[]>([]);
   const [otherFiles, setOtherFiles] = useState<any[]>([]);
 
-  const loadData = useCallback(async () => {
-    if (!hasAccounts) return;
-    setIsLoading(true);
-    try {
-      let query = activeAccountId ? `?account_id=${activeAccountId}` : "";
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
 
-      if (activeTab === "movies") {
-        const res = await fetch(`/api/library/movies${query}`);
-        const data = await res.json();
-        setMovies(data.items || []);
-      } else if (activeTab === "tv") {
-        const res = await fetch(`/api/library/tv${query}`);
-        const data = await res.json();
-        setTvShows(data.shows || []);
-      } else if (activeTab === "other") {
-        const res = await fetch(`/api/library/other${query}`);
-        const data = await res.json();
-        setOtherFiles(data.items || []);
+  const activeAccountIdRef = useRef(activeAccountId);
+  activeAccountIdRef.current = activeAccountId;
+
+  const applyTabItems = useCallback((tab: "movies" | "tv" | "other", items: any[]) => {
+    if (activeTabRef.current !== tab) return;
+
+    if (tab === "movies") setMovies(items);
+    else if (tab === "tv") setTvShows(items);
+    else if (tab === "other") setOtherFiles(items);
+  }, []);
+
+  const syncLibrary = useCallback(
+    async (forceRefresh = false) => {
+      if (!hasAccounts) return;
+      const currentTab = activeTabRef.current;
+      const currentAccountId = activeAccountIdRef.current;
+
+      try {
+
+        // 1. Instant read from local cache
+        const cached = await getTabItems(currentTab, currentAccountId);
+        if (cached.items.length > 0 && !forceRefresh) {
+          applyTabItems(currentTab, cached.items);
+          setIsLoading(false);
+        } else {
+          setIsLoading(true);
+        }
+
+        // 2. Query sync status for all accounts
+        const syncRes = await fetch("/api/library/sync-status");
+        if (syncRes.status === 401) {
+          await clearLibraryCache();
+          window.location.href = "/login";
+          return;
+        }
+
+        if (!syncRes.ok) throw new Error("Failed to fetch sync status");
+
+        const { accounts: serverAccounts } = (await syncRes.json()) as {
+          accounts: { id: number; last_synced_at: string | null; is_active: boolean }[];
+        };
+
+        if (serverAccounts) {
+          setAccounts(serverAccounts as any);
+        }
+
+        // Clean up deleted accounts from cache
+        const serverAccountIds = new Set(serverAccounts.map((a) => a.id));
+        for (const cachedId of Object.keys(cached.syncedTimestamps).map(Number)) {
+          if (!serverAccountIds.has(cachedId)) {
+            await removeAccountFromCache(cachedId);
+          }
+        }
+
+        // 3. Identify stale accounts that need fresh data
+        const staleAccounts = serverAccounts.filter((acc) => {
+          if (!acc.is_active) return false;
+          const cachedSync = cached.syncedTimestamps[acc.id];
+          return forceRefresh || !cachedSync || cachedSync !== acc.last_synced_at;
+        });
+
+
+        // 4. Fetch only stale accounts in parallel
+        if (staleAccounts.length > 0) {
+          await Promise.all(
+            staleAccounts.map(async (acc) => {
+              const endpoint =
+                currentTab === "movies"
+                  ? `/api/library/movies?account_id=${acc.id}`
+                  : currentTab === "tv"
+                    ? `/api/library/tv?account_id=${acc.id}`
+                    : `/api/library/other?account_id=${acc.id}`;
+
+              const res = await fetch(endpoint, { cache: "no-store" });
+              if (res.ok) {
+                const data = await res.json();
+                const freshItems =
+                  currentTab === "movies" || currentTab === "other"
+                    ? data.items || []
+                    : data.shows || [];
+                await setTabAccountData(currentTab, acc.id, acc.last_synced_at, freshItems);
+              }
+            })
+          );
+
+          // Update UI with newly cached data
+          const updated = await getTabItems(currentTab, activeAccountIdRef.current);
+          applyTabItems(currentTab, updated.items);
+        }
+      } catch (e) {
+        console.error("Library sync error:", e);
+        toast.error("Failed to synchronize library");
+      } finally {
+        setIsLoading(false);
       }
-    } catch (e) {
-      console.error("Failed to load library data:", e);
-      toast.error("Failed to fetch library content");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [activeTab, activeAccountId, hasAccounts]);
+    },
+    [hasAccounts, setAccounts, applyTabItems]
+  );
 
+  // Sync on tab or active account change (calls syncLibrary on mount and on tab/account switches)
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    syncLibrary();
+  }, [activeTab, activeAccountId, syncLibrary]);
 
   useEffect(() => {
     if (accountsProp.length > 0) setAccounts(accountsProp);
   }, [accountsProp, setAccounts]);
 
-  // Lightweight refresh when files are inserted inline (no full TorBox API re-sync)
+  // Sync on window focus (user switches back to tab)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        syncLibrary();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [syncLibrary]);
+
+  // Re-sync on custom torrent update event
   useEffect(() => {
     const handleFilesUpdated = () => {
-      loadData();
+      syncLibrary(true);
     };
     window.addEventListener("torrent-files-updated", handleFilesUpdated);
     return () => window.removeEventListener("torrent-files-updated", handleFilesUpdated);
-  }, [loadData]);
+  }, [syncLibrary]);
 
 
   useEffect(() => {
@@ -161,8 +249,8 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
 
       const activeTag = document.activeElement?.tagName.toLowerCase();
       if (
-        activeTag === "input" || 
-        activeTag === "textarea" || 
+        activeTag === "input" ||
+        activeTag === "textarea" ||
         (document.activeElement as HTMLElement)?.isContentEditable
       ) {
         return;
@@ -213,7 +301,7 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
               nextIndex = activeIndex + cols < cards.length ? activeIndex + cols : activeIndex;
             }
           }
-          
+
           if (nextIndex !== activeIndex) {
             cards[nextIndex].focus();
             cards[nextIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -332,21 +420,21 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
                   <Button variant="outline" size="sm" className="h-9 gap-2 shrink-0">
                     <Filter size={14} className="text-muted-foreground" />
                     <span className="truncate max-w-[120px]">
-                      {activeAccountId 
-                        ? accounts.find(a => a.id === activeAccountId)?.torbox_email || "Account" 
+                      {activeAccountId
+                        ? accounts.find(a => a.id === activeAccountId)?.torbox_email || "Account"
                         : "All Accounts"}
                     </span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56 bg-popover/95 backdrop-blur-xl border-border/60">
                   <DropdownMenuItem onClick={() => setActiveAccountId(null)} className="cursor-pointer font-medium">
-                     All Accounts
+                    All Accounts
                   </DropdownMenuItem>
                   {accounts.map(acc => (
-                    <DropdownMenuItem 
-                       key={acc.id} 
-                       onClick={() => setActiveAccountId(acc.id)} 
-                       className="cursor-pointer gap-2"
+                    <DropdownMenuItem
+                      key={acc.id}
+                      onClick={() => setActiveAccountId(acc.id)}
+                      className="cursor-pointer gap-2"
                     >
                       <AccountBadge accountId={acc.id} email={acc.torbox_email} variant="inline" />
                       <span className="truncate">{acc.torbox_email}</span>
@@ -374,9 +462,9 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
       </div>
 
       {/* Main Content Area */}
-      <div 
-        className="flex-1 overflow-y-auto p-4 md:p-6" 
-        ref={scrollRef} 
+      <div
+        className="flex-1 overflow-y-auto p-4 md:p-6"
+        ref={scrollRef}
         onScroll={handleScroll}
       >
         {selectedShowTitle && activeTab === "tv" ? (

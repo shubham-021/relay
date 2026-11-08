@@ -1,12 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { getTvShowDetailsForUser } from "@/lib/db";
 import { formatBytes } from "@/lib/utils";
+import { getLibEtag, validateETag } from "@/lib/library-etag";
+import { createHash } from "crypto";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ showTitle: string }> }
 ) {
   try {
@@ -17,6 +19,13 @@ export async function GET(
 
     const { showTitle: rawShowTitle } = await params;
     const showTitle = decodeURIComponent(rawShowTitle);
+
+    const baseEtag = getLibEtag(session.userId);
+    const showHash = createHash("md5").update(`${showTitle}:${baseEtag}`).digest("hex");
+    const etag = `W/"tvshow-${showHash}"`;
+
+    const notModified = validateETag(request, etag);
+    if (notModified) return notModified;
 
     const rawEpisodes = getTvShowDetailsForUser(session.userId, showTitle);
     if (!rawEpisodes || rawEpisodes.length === 0) {

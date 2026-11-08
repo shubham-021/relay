@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useFileStore } from "@/lib/store";
+import { clearLibraryCache } from "@/lib/library-cache";
 
 interface SidebarProps {
   username?: string;
@@ -46,6 +47,9 @@ export function Sidebar({ username = "User" }: SidebarProps) {
   const handleLogout = async () => {
     setIsLoggingOut(true);
     try {
+      await clearLibraryCache();
+      useFileStore.getState().clearCache();
+
       await fetch("/api/auth/logout", { method: "POST" });
       toast.success("Logged out");
       router.push("/login");

@@ -14,7 +14,7 @@ function getAccountColor(accountId: number) {
 }
 
 function emailLabel(email: string): string {
-  return email.charAt(0).toUpperCase();
+  return email && email.length > 0 ? email.charAt(0).toUpperCase() : "?";
 }
 
 interface AccountBadgeProps {

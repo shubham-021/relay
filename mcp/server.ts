@@ -230,7 +230,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
 
     server.registerTool("check_torrent_cache", {
         title: "Check Torrent Cache",
-        description: "Check if a torrent hash is instantly available (cached) on TorBox.",
+        description: "Check if a torrent hash is instantly available (cached) on TorBox. Cache availability is global across TorBox, not account-specific. The `account_id` parameter is required only to authenticate or establish the TorBox account context for the API request. Checking a torrent hash once using ANY valid linked account is sufficient. Never repeat cache checks across multiple accounts for the same hash.",
         inputSchema: {
             hash: z.string().min(1).describe("Torrent info hash"),
             account_id: z.number().int().positive().describe("TorBox account ID to check against"),

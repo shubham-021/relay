@@ -45,10 +45,6 @@ If you wish to host the web interface locally, you can run the application and t
 - Clone and start the `relay-aemond` daemon separately on your machine.
 - Access the local web interface to interact with your TorBox storage.
 
-### 3. Unified Orchestrator Setup
-
-For a seamless local development and usage experience, you can use the official orchestrator. This is a Turborepo configured to manage both the web interface and the local daemon simultaneously.
-
 - Clone the orchestrator repository: [shubham-021/relay-orch](https://github.com/shubham-021/relay-orch)
 - Install the workspace dependencies.
 - Ensure all necessary environment variables are filled out in the project.

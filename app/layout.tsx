@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Outfit } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { RemotePlayListener } from "@/components/remote-play-listener";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -55,6 +56,7 @@ export default function RootLayout({
           <TooltipProvider delayDuration={200}>
             {children}
           </TooltipProvider>
+          <RemotePlayListener />
           <Toaster
             theme="system"
             position="bottom-right"

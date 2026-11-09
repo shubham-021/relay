@@ -18,6 +18,7 @@ import { SOURCES } from "@/tor_sources/registry";
 import { cachedSearch } from "@/tor_sources/cache";
 import { formatBytes } from "@/lib/utils";
 import { syncAccount } from "@/lib/sync";
+import { sendPlayCommand } from "@/lib/remote-control";
 
 function toolError(e: unknown): { content: [{ type: "text"; text: string }]; isError: true } {
     const msg = e instanceof Error ? e.message : String(e);
@@ -335,54 +336,34 @@ export function createMcpServer(ctx: McpContext): McpServer {
             const activePlayer = player ?? "mpv";
             const daemonEndpoint = `${daemon_url ?? "http://localhost:9070"}/play`;
             const reportBase = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/+$/, "") : "http://localhost:3000";
-            try {
-                const daemonRes = await fetch(daemonEndpoint, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        player: activePlayer,
-                        url,
-                        startTime,
-                        torrent_id: torrent_id,
-                        file_id: file_id,
-                        account_id: account_id,
-                        token: playToken,
-                        reportUrl: `${reportBase}/api/progress`,
-                    }),
-                });
-                if (daemonRes.ok) {
-                    const result = {
-                        success: true,
-                        player: activePlayer,
-                        startTime,
-                        message: `Playback launched in ${activePlayer.toUpperCase()} via Aemond daemon`,
-                    };
-                    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+            const playPayload = {
+                player: activePlayer,
+                url,
+                startTime,
+                torrent_id,
+                file_id,
+                account_id,
+                token: playToken,
+                reportUrl: `${reportBase}/api/progress`
+            };
+
+            const dispatched = sendPlayCommand(ctx.userId, playPayload);
+            if (!dispatched) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: "Could not launch playback: No active Relay browser tab was found. Please ensure you have Relay open in your browser so it can bridge the playback to your local machine."
+                    }],
+                    isError: true
                 }
-                const errText = await daemonRes.text();
-                return {
-                    content: [{
-                        type: "text",
-                        text: JSON.stringify({
-                            success: false,
-                            error: `Aemond daemon returned HTTP ${daemonRes.status}: ${errText}`,
-                            fallbackUrl: url,
-                        }, null, 2),
-                    }],
-                    isError: true,
-                };
-            } catch (daemonErr) {
-                return {
-                    content: [{
-                        type: "text",
-                        text: JSON.stringify({
-                            success: false,
-                            error: `Could not connect to Aemond daemon at ${daemonEndpoint}. Ensure Relay Aemond is running on the machine.`,
-                            fallbackUrl: url,
-                        }, null, 2),
-                    }],
-                    isError: true,
-                };
+            }
+
+            return {
+                content: [{
+                    type: "text",
+                    text: `Successfully sent play command to your browser. ${activePlayer.toUpperCase()} is launching on your desktop.`
+                }]
             }
         } catch (e) {
             return toolError(e);

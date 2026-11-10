@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getAccountsByUserId, verifyUserAccountAccess } from "@/lib/db";
+import { getAccountsByUserId, verifyUserAccountAccess, updateAccountUpdatedTime } from "@/lib/db";
 import { getValidAccessToken, createTorrent } from "@/lib/torbox";
 import { processAndInsertFile } from "@/lib/sync";
 import { acquireLock, releaseLock } from "@/lib/in-flight";
@@ -96,6 +96,10 @@ export async function POST(request: Request) {
             // Continue processing remaining files — don't let one failure block others
           }
         }
+      }
+
+      if (filesInserted > 0) {
+        updateAccountUpdatedTime(activeAccount.id);
       }
 
       return NextResponse.json({

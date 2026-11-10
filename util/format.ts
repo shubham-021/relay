@@ -49,6 +49,16 @@ export function formatCount(n: number): string {
   return m < 10 ? `${m.toFixed(1).replace(/\.0$/, "")}m` : `${Math.round(m)}m`;
 }
 
+export function parseUtcTimestamp(timestamp?: string | null): Date | null {
+  if (!timestamp) return null;
+  const trimmed = timestamp.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const date = new Date(hasZone ? normalized : `${normalized}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function formatRelative(unixSeconds?: number): string {
   if (!unixSeconds || !Number.isFinite(unixSeconds) || unixSeconds <= 0) return "";
   const diff = Date.now() / 1000 - unixSeconds;

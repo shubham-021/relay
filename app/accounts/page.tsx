@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { Loader2, PlusCircle, RefreshCw, Trash2, User } from "lucide-react";
 import type { TorBoxAccount } from "@/lib/types";
 import { useFileStore } from "@/lib/store";
+import { parseUtcTimestamp } from "@/util/format";
 
 export default function AccountsPage() {
   const { isAddingAccount } = useFileStore();
@@ -151,7 +152,10 @@ export default function AccountsPage() {
                         <div className="min-w-0">
                           <p className="font-semibold text-sm sm:text-base truncate">{account.torbox_email}</p>
                           <p className="text-[11px] sm:text-xs text-muted-foreground">
-                            Last synced: {account.last_synced_at ? new Date(account.last_synced_at + 'Z').toLocaleString() : "Never"}
+                            Last synced: {parseUtcTimestamp(account.last_synced_at)?.toLocaleString() ?? "Never"}
+                          </p>
+                          <p className="text-[11px] sm:text-xs text-muted-foreground">
+                            Last updated: {parseUtcTimestamp(account.last_updated_at)?.toLocaleString() ?? "Never"}
                           </p>
                         </div>
                       </div>

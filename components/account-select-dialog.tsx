@@ -12,7 +12,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { AccountBadge } from "@/components/account-badge";
-import { formatRelative } from "@/util/format";
+import { formatRelative, parseUtcTimestamp } from "@/util/format";
 import { cn } from "@/lib/utils";
 
 interface AccountSelectDialogProps {
@@ -69,6 +69,8 @@ export function AccountSelectDialog({
         <div className="flex-1 overflow-y-auto space-y-2 py-2">
           {accounts.map((account) => {
             const isSelected = selectedIds.includes(account.id);
+            const syncedDate = parseUtcTimestamp(account.last_synced_at);
+            const updatedDate = parseUtcTimestamp(account.last_updated_at);
             return (
               <button
                 key={account.id}
@@ -92,9 +94,14 @@ export function AccountSelectDialog({
                 <AccountBadge accountId={account.id} email={account.torbox_email} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{account.torbox_email}</p>
-                  {account.last_synced_at && (
+                  {syncedDate && (
                     <p className="text-xs text-muted-foreground">
-                      Last synced: {formatRelative(new Date(account.last_synced_at).getTime() / 1000)}
+                      Last synced: {formatRelative(syncedDate.getTime() / 1000)}
+                    </p>
+                  )}
+                  {updatedDate && (
+                    <p className="text-xs text-muted-foreground">
+                      Last updated: {formatRelative(updatedDate.getTime() / 1000)}
                     </p>
                   )}
                 </div>

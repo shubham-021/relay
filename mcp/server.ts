@@ -43,6 +43,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
             email: a.torbox_email,
             is_active: a.is_active === 1,
             last_synced_at: a.last_synced_at ?? null,
+            last_updated_at: a.last_updated_at ?? null,
         }));
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     });

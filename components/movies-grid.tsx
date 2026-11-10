@@ -216,6 +216,7 @@ export function MoviesGrid({ movies, isLoading, searchQuery, playerProtocol }: M
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to delete torrent");
       setDeletedIds((prev) => new Set(prev).add(deleteTarget.id));
+      window.dispatchEvent(new CustomEvent("torrent-files-updated"));
       toast.success("Movie deleted", { description: deleteTarget.title });
     } catch (e: any) {
       toast.error(e.message || "Failed to delete torrent");

@@ -6,6 +6,7 @@ if (!existsSync("./data")) {
 }
 
 let db: any;
+const UTC_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 const globalForDb = globalThis as unknown as { __domaDb: any };
 
@@ -66,6 +67,7 @@ try {
         refresh_token    TEXT,
         token_expires_at INTEGER,                   -- unix timestamp (seconds)
         last_synced_at   DATETIME,
+        last_updated_at  DATETIME,
         created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(torbox_email)
       )
@@ -237,6 +239,18 @@ try {
     try { globalForDb.__domaDb.query("ALTER TABLE media ADD COLUMN backdrop_url TEXT").run(); } catch (_) { }
     try { globalForDb.__domaDb.query("ALTER TABLE media ADD COLUMN overview TEXT").run(); } catch (_) { }
     try { globalForDb.__domaDb.query("ALTER TABLE user_watched ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0").run(); } catch (_) { }
+    try { globalForDb.__domaDb.query("ALTER TABLE accounts ADD COLUMN last_updated_at DATETIME").run(); } catch { }
+    try {
+      globalForDb.__domaDb
+        .query("UPDATE accounts SET last_synced_at = replace(last_synced_at, ' ', 'T') || 'Z' WHERE last_synced_at IS NOT NULL AND last_synced_at NOT LIKE '%T%'")
+        .run();
+      globalForDb.__domaDb
+        .query("UPDATE accounts SET last_updated_at = replace(last_updated_at, ' ', 'T') || 'Z' WHERE last_updated_at IS NOT NULL AND last_updated_at NOT LIKE '%T%'")
+        .run();
+      globalForDb.__domaDb
+        .query("UPDATE accounts SET last_updated_at = last_synced_at WHERE last_updated_at IS NULL AND last_synced_at IS NOT NULL")
+        .run();
+    } catch { }
   }
 
   db = globalForDb.__domaDb;
@@ -290,7 +304,7 @@ export function getAccountsByUserId(userId: number) {
   try {
     return db
       .query(`
-        SELECT a.id, a.torbox_email, a.last_synced_at, ua.is_active 
+        SELECT a.id, a.torbox_email, a.last_synced_at, a.last_updated_at, ua.is_active 
         FROM accounts a
         JOIN user_accounts ua ON ua.account_id = a.id
         WHERE ua.user_id = ?
@@ -422,9 +436,20 @@ export function updateAccountTokens(
 export function updateAccountSyncTime(accountId: number) {
   if (!db) return;
   try {
-    db.query("UPDATE accounts SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?").run(accountId);
+    db.query(
+      `UPDATE accounts SET last_synced_at = ${UTC_NOW_SQL}, last_updated_at = ${UTC_NOW_SQL} WHERE id = ?`
+    ).run(accountId);
   } catch (e) {
     console.error("updateAccountSyncTime error:", e);
+  }
+}
+
+export function updateAccountUpdatedTime(accountId: number) {
+  if (!db) return;
+  try {
+    db.query(`UPDATE accounts SET last_updated_at = ${UTC_NOW_SQL} WHERE id = ?`).run(accountId);
+  } catch (e) {
+    console.error("updateAccountUpdatedTime error:", e);
   }
 }
 
@@ -771,6 +796,7 @@ export function deleteRemoteFilesByTorrent(accountId: number, torrentId: number)
       db.query("DELETE FROM user_watched WHERE account_id = ? AND torrent_id = ?").run(accountId, torrentId);
       db.query("DELETE FROM remote_list_cache WHERE account_id = ? AND torrent_id = ?").run(accountId, torrentId);
       db.query("DELETE FROM torrents WHERE account_id = ? AND torrent_id = ?").run(accountId, torrentId);
+      db.query(`UPDATE accounts SET last_updated_at = ${UTC_NOW_SQL} WHERE id = ?`).run(accountId);
     });
     tx();
   } catch (e) {
@@ -1084,16 +1110,20 @@ export function upsertWatchedPosition(
 ) {
   if (!db) return;
   try {
-    db.query(
-      `INSERT INTO user_watched (user_id, account_id, torrent_id, file_id, position_seconds, duration_seconds, completed, hidden)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(user_id, account_id, torrent_id, file_id) DO UPDATE SET
-         position_seconds = excluded.position_seconds,
-         duration_seconds = COALESCE(excluded.duration_seconds, user_watched.duration_seconds),
-         completed        = excluded.completed,
-         hidden           = excluded.hidden,
-         last_updated     = CURRENT_TIMESTAMP`
-    ).run(userId, accountId, torrentId, fileId, position, duration ?? null, completed ? 1 : 0, hidden ? 1 : 0);
+    const tx = db.transaction(() => {
+      db.query(
+        `INSERT INTO user_watched (user_id, account_id, torrent_id, file_id, position_seconds, duration_seconds, completed, hidden)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, account_id, torrent_id, file_id) DO UPDATE SET
+           position_seconds = excluded.position_seconds,
+           duration_seconds = COALESCE(excluded.duration_seconds, user_watched.duration_seconds),
+           completed        = excluded.completed,
+           hidden           = excluded.hidden,
+           last_updated     = CURRENT_TIMESTAMP`
+      ).run(userId, accountId, torrentId, fileId, position, duration ?? null, completed ? 1 : 0, hidden ? 1 : 0);
+      db.query(`UPDATE accounts SET last_updated_at = ${UTC_NOW_SQL} WHERE id = ?`).run(accountId);
+    });
+    tx();
   } catch (e) {
     console.error("upsertWatchedPosition error:", e);
   }

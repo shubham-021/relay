@@ -189,6 +189,7 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
       if (!res.ok) throw new Error(data.error || "Failed to delete torrent");
       toast.success("File deleted", { description: file.filename });
       onDeleted(file.id);
+      window.dispatchEvent(new CustomEvent("torrent-files-updated"));
     } catch (e: any) {
       toast.error(e.message || "Failed to delete torrent");
     } finally {

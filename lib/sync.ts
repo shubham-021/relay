@@ -11,6 +11,7 @@
 
 import {
   updateAccountSyncTime,
+  updateAccountUpdatedTime,
   clearRemoteFilesForAccount,
   upsertRemoteFile,
   upsertMedia,
@@ -235,7 +236,7 @@ export async function processAndInsertFile(
       mediaType = "movie";
     } else {
       // Try TMDB TV as fallback
-      const tvResult = await searchTmdbTv(parsed.title, parsed.year);
+      const tvResult = await searchTmdbTv(parsed.title, parsed.year, options?.signal);
       if (tvResult) {
         const showTmdbId = tvResult.id as number;
         tmdbId = showTmdbId;
@@ -294,6 +295,8 @@ export async function processAndInsertFile(
 }
 
 export async function syncAccount(accountId: number, signal?: AbortSignal): Promise<SyncResult> {
+  let cleared = false;
+  let synced = false;
   try {
     // 1. Get a valid access token (auto-refreshes if expired)
     let accessToken: string;
@@ -319,6 +322,7 @@ export async function syncAccount(accountId: number, signal?: AbortSignal): Prom
     // 3. Clear all existing remote_list_cache rows for this account (clean slate)
     //    NOTE: media & tv_episodes tables are NOT cleared — they are shared metadata caches.
     clearRemoteFilesForAccount(accountId);
+    cleared = true;
 
     let filesSynced = 0;
 
@@ -334,16 +338,22 @@ export async function syncAccount(accountId: number, signal?: AbortSignal): Prom
           accountId,
           torrentId,
           torrentHash,
-          file
+          file,
+          { signal }
         );
         if (inserted) filesSynced++;
       }
     }
 
     updateAccountSyncTime(accountId);
+    synced = true;
     return { success: true, filesSynced };
   } catch (error) {
     console.error("Sync error:", error);
     return { success: false, filesSynced: 0, error: "Sync failed" };
+  } finally {
+    if (cleared && !synced) {
+      updateAccountUpdatedTime(accountId);
+    }
   }
 }

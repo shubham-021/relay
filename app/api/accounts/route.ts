@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getSession } from "@/lib/session";
 import {
   getAccountByEmail,
+  getAccountById,
   createAccount,
   getAccountsByUserId,
   deleteAccount,
@@ -97,6 +98,7 @@ export async function POST(request: Request) {
 
     // Automatically perform initial sync for the newly added account
     await syncAccount(accountId);
+    const createdAccount = getAccountById(accountId);
 
     return NextResponse.json({
       success: true,
@@ -104,7 +106,8 @@ export async function POST(request: Request) {
         id: accountId,
         torbox_email,
         is_active: true,
-        last_synced_at: null,
+        last_synced_at: createdAccount?.last_synced_at ?? null,
+        last_updated_at: createdAccount?.last_updated_at ?? null,
       },
     });
   } catch (error) {

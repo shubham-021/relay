@@ -6,6 +6,7 @@ export interface Account {
   refresh_token: string | null;
   token_expires_at: number | null; // unix timestamp (seconds)
   last_synced_at: string | null;
+  last_updated_at: string | null;
   created_at: string;
 }
 
@@ -28,6 +29,7 @@ export interface TorBoxAccount {
   torbox_email: string;
   is_active: boolean;
   last_synced_at: string | null;
+  last_updated_at: string | null;
 }
 
 // File item returned by GET /api/files (from DB join)

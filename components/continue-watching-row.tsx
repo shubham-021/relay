@@ -62,6 +62,7 @@ export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps
     });
     if (res.ok) {
       toast.success("Marked as watched");
+      window.dispatchEvent(new CustomEvent("torrent-files-updated"));
       load();
     } else {
       toast.error("Failed to mark as watched");

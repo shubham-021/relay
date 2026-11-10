@@ -22,12 +22,19 @@ import { useFileStore } from "@/lib/store";
 import { getCachedData, setCachedData, clearLibraryCache } from "@/lib/library-cache";
 
 interface FileBrowserProps {
+  userId: number;
   playerProtocol: string;
   hasAccounts: boolean;
-  accounts: { id: number; torbox_email: string; is_active: boolean; last_synced_at: string | null }[];
+  accounts: {
+    id: number;
+    torbox_email: string;
+    is_active: boolean;
+    last_synced_at: string | null;
+    last_updated_at: string | null;
+  }[];
 }
 
-export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsProp }: FileBrowserProps) {
+export function FileBrowser({ userId, playerProtocol, hasAccounts, accounts: accountsProp }: FileBrowserProps) {
   const { activeAccountId, setActiveAccountId, isAddingAccount, accounts, setAccounts } = useFileStore();
 
   const [activeTab, setActiveTab] = useState<"movies" | "tv" | "other">(() => {
@@ -81,8 +88,8 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
   const activeAccountIdRef = useRef(activeAccountId);
   activeAccountIdRef.current = activeAccountId;
 
-  const applyTabItems = useCallback((tab: "movies" | "tv" | "other", items: any[]) => {
-    if (activeTabRef.current !== tab) return;
+  const applyTabItems = useCallback((tab: "movies" | "tv" | "other", accountId: number | null, items: any[]) => {
+    if (activeTabRef.current !== tab || activeAccountIdRef.current !== accountId) return;
     if (tab === "movies") setMovies(items);
     else if (tab === "tv") setTvShows(items);
     else if (tab === "other") setOtherFiles(items);
@@ -93,12 +100,13 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
       if (!hasAccounts) return;
       const currentTab = activeTabRef.current;
       const currentAccountId = activeAccountIdRef.current;
-      const cacheKey = currentAccountId ? `${currentTab}:${currentAccountId}` : currentTab;
+      const baseKey = `${userId}:${currentTab}`;
+      const cacheKey = currentAccountId ? `${baseKey}:${currentAccountId}` : baseKey;
 
       // 1. Instant render from local IndexedDB cache
       const cached = await getCachedData<any[]>(cacheKey);
-      if (cached.data && cached.data.length > 0 && !forceRefresh) {
-        applyTabItems(currentTab, cached.data);
+      if (cached.data !== null && !forceRefresh) {
+        applyTabItems(currentTab, currentAccountId, cached.data);
         setIsLoading(false);
       } else {
         setIsLoading(true);
@@ -116,7 +124,10 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
           headers["If-None-Match"] = cached.etag;
         }
 
-        const res = await fetch(endpoint, { headers });
+        const res = await fetch(endpoint, {
+          headers,
+          ...(forceRefresh ? { cache: "no-store" as const } : {}),
+        });
 
         if (res.status === 401) {
           await clearLibraryCache();
@@ -136,7 +147,7 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
           const items = currentTab === "tv" ? json.shows || [] : json.items || [];
           const newEtag = res.headers.get("etag");
 
-          applyTabItems(currentTab, items);
+          applyTabItems(currentTab, currentAccountId, items);
           await setCachedData(cacheKey, newEtag, items);
         }
       } catch (e) {
@@ -146,7 +157,7 @@ export function FileBrowser({ playerProtocol, hasAccounts, accounts: accountsPro
         setIsLoading(false);
       }
     },
-    [hasAccounts, applyTabItems]
+    [userId, hasAccounts, applyTabItems]
   );
 
   // Load immediately on mount, tab switch, or account filter change

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { acquireLock, releaseLock } from "@/lib/in-flight";
 import { generateAllThumbnails } from "@/lib/thumbnails";
-import { getAccountsByUserId } from "@/lib/db";
+import { getAccountsByUserId, updateAccountUpdatedTime } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +36,9 @@ export async function POST(request: Request) {
       for (const account of accounts) {
         if (controller.signal.aborted) break;
         const result = await generateAllThumbnails(account.id, controller.signal);
+        if (result.generated > 0) {
+          updateAccountUpdatedTime(account.id);
+        }
         totalGenerated += result.generated;
         totalSkipped += result.skipped;
         totalFailed += result.failed;

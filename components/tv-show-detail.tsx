@@ -113,13 +113,13 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedTorrents, setSelectedTorrents] = useState<Set<number>>(new Set());
 
-  const loadShowDetail = useCallback(async () => {
+  const loadShowDetail = useCallback(async (forceRefresh = false) => {
       setIsLoading(true);
       setError(null);
       try {
         const url = `/api/library/tv/${encodeURIComponent(showTitle)}`;
 
-        const res = await fetch(url);
+        const res = await fetch(url, forceRefresh ? { cache: "no-store" } : undefined);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to load show detail");
 
@@ -288,13 +288,14 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to delete show");
       toast.success("Torrents deleted");
+      window.dispatchEvent(new CustomEvent("torrent-files-updated"));
       
       if (selectedTorrents.size === allTorrentIds.length) {
         onBack();
       } else {
         setIsDeleteMode(false);
         setSelectedTorrents(new Set());
-        loadShowDetail();
+        loadShowDetail(true);
       }
     } catch (e: any) {
       toast.error(e.message || "Failed to delete show");

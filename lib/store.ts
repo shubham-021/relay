@@ -1,6 +1,26 @@
 import { create } from "zustand";
 import type { FileItem, BreadcrumbItem, TorBoxAccount } from "@/lib/types";
 
+const CONTINUE_WATCHING_COLLAPSED_KEY = "relay-continue-watching-collapsed";
+
+function readContinueWatchingCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(CONTINUE_WATCHING_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeContinueWatchingCollapsed(collapsed: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(CONTINUE_WATCHING_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export type SortKey = "name" | "size" | "date";
 export type SortOrder = "asc" | "desc";
 
@@ -39,6 +59,7 @@ interface FileStoreState {
   setSortOrder: (order: SortOrder) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setContinueWatchingCollapsed: (collapsed: boolean) => void;
+  hydrateContinueWatchingCollapsed: () => void;
   toggleSort: () => void;
   fetchFiles: (path: string, forceRefresh?: boolean) => Promise<void>;
   clearCache: () => void;
@@ -69,7 +90,16 @@ export const useFileStore = create<FileStoreState>((set, get) => ({
   setSortKey: (key) => set({ sortKey: key }),
   setSortOrder: (order) => set({ sortOrder: order }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
-  setContinueWatchingCollapsed: (collapsed) => set({ continueWatchingCollapsed: collapsed }),
+  setContinueWatchingCollapsed: (collapsed) => {
+    writeContinueWatchingCollapsed(collapsed);
+    set({ continueWatchingCollapsed: collapsed });
+  },
+  hydrateContinueWatchingCollapsed: () => {
+    const stored = readContinueWatchingCollapsed();
+    if (get().continueWatchingCollapsed !== stored) {
+      set({ continueWatchingCollapsed: stored });
+    }
+  },
   toggleSort: () => {
     const { sortKey, sortOrder } = get();
     const keys: SortKey[] = ["name", "size", "date"];

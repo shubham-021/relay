@@ -15,7 +15,12 @@ interface ContinueWatchingRowProps {
 const FOCUS_RELOAD_MIN_INTERVAL_MS = 10_000;
 
 export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps) {
-  const { viewMode, continueWatchingCollapsed, setContinueWatchingCollapsed } = useFileStore();
+  const {
+    viewMode,
+    continueWatchingCollapsed,
+    setContinueWatchingCollapsed,
+    hydrateContinueWatchingCollapsed,
+  } = useFileStore();
   const [items, setItems] = useState<ContinueWatchingItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const lastLoadAtRef = useRef(0);
@@ -34,6 +39,7 @@ export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps
   }, []);
 
   useEffect(() => {
+    hydrateContinueWatchingCollapsed();
     load();
     let timeoutId: NodeJS.Timeout | undefined;
     const onFocus = () => {
@@ -53,7 +59,7 @@ export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps
       clearTimeout(timeoutId);
       window.removeEventListener("focus", onFocus);
     };
-  }, [load]);
+  }, [hydrateContinueWatchingCollapsed, load]);
 
   const handleMarkCompleted = async (item: ContinueWatchingItem) => {
     const res = await fetch("/api/library/continue-watching/complete", {

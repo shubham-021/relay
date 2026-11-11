@@ -25,6 +25,7 @@ interface FileStoreState {
   sortKey: SortKey;
   sortOrder: SortOrder;
   sidebarCollapsed: boolean;
+  continueWatchingCollapsed: boolean;
   accounts: TorBoxAccount[];
   setAccounts: (accounts: TorBoxAccount[]) => void;
 
@@ -37,6 +38,7 @@ interface FileStoreState {
   setSortKey: (key: SortKey) => void;
   setSortOrder: (order: SortOrder) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setContinueWatchingCollapsed: (collapsed: boolean) => void;
   toggleSort: () => void;
   fetchFiles: (path: string, forceRefresh?: boolean) => Promise<void>;
   clearCache: () => void;
@@ -55,6 +57,7 @@ export const useFileStore = create<FileStoreState>((set, get) => ({
   sortKey: "name",
   sortOrder: "asc",
   sidebarCollapsed: false,
+  continueWatchingCollapsed: false,
   accounts: [],
   setAccounts: (accounts) => set({ accounts }),
 
@@ -66,6 +69,7 @@ export const useFileStore = create<FileStoreState>((set, get) => ({
   setSortKey: (key) => set({ sortKey: key }),
   setSortOrder: (order) => set({ sortOrder: order }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+  setContinueWatchingCollapsed: (collapsed) => set({ continueWatchingCollapsed: collapsed }),
   toggleSort: () => {
     const { sortKey, sortOrder } = get();
     const keys: SortKey[] = ["name", "size", "date"];

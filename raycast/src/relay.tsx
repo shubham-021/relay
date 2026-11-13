@@ -87,14 +87,14 @@ export default function RelayCommand() {
   const [continueWatching, setContinueWatching] = useState<
     ContinueWatchingItem[]
   >(() => getCachedArray<ContinueWatchingItem>("continue-watching"));
-  const [movies, setMovies] = useState<MovieItem[]>(
-    () => getCachedArray<MovieItem>("movies"),
+  const [movies, setMovies] = useState<MovieItem[]>(() =>
+    getCachedArray<MovieItem>("movies"),
   );
-  const [shows, setShows] = useState<TvShowSummary[]>(
-    () => getCachedArray<TvShowSummary>("shows"),
+  const [shows, setShows] = useState<TvShowSummary[]>(() =>
+    getCachedArray<TvShowSummary>("shows"),
   );
-  const [otherFiles, setOtherFiles] = useState<OtherFileItem[]>(
-    () => getCachedArray<OtherFileItem>("other"),
+  const [otherFiles, setOtherFiles] = useState<OtherFileItem[]>(() =>
+    getCachedArray<OtherFileItem>("other"),
   );
 
   const loadLibrary = useCallback(async () => {
@@ -144,6 +144,20 @@ export default function RelayCommand() {
   useEffect(() => {
     void loadLibrary();
   }, [loadLibrary]);
+
+  // Auto-refresh Continue Watching every 5s while view is active so exit progress appears immediately
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const interval = setInterval(async () => {
+      try {
+        const cw = await getContinueWatching();
+        setContinueWatching(Array.isArray(cw) ? cw : []);
+      } catch {
+        // ignore background poll errors
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
 
   const handleLoggedOut = useCallback(async () => {
     setIsAuthenticated(false);

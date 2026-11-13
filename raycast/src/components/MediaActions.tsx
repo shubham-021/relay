@@ -58,6 +58,14 @@ export function RelayManagementActions({
 
   return (
     <ActionPanel.Section title="Relay">
+      {onRefresh && (
+        <Action
+          title="Refresh"
+          icon={Icon.ArrowClockwise}
+          shortcut={{ modifiers: ["cmd"], key: "r" }}
+          onAction={onRefresh}
+        />
+      )}
       <Action
         title="Configure Player"
         icon={Icon.Video}
@@ -65,9 +73,9 @@ export function RelayManagementActions({
         onAction={() => push(<ConfigurePlayerForm />)}
       />
       <Action
-        title="Sync Library"
-        icon={Icon.ArrowClockwise}
-        shortcut={{ modifiers: ["cmd"], key: "r" }}
+        title="Sync TorBox Library"
+        icon={Icon.Cloud}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
         onAction={handleSync}
       />
       <Action

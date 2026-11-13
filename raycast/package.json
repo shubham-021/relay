@@ -30,10 +30,11 @@
     {
       "name": "serverUrl",
       "title": "Relay Server URL",
-      "description": "Base URL of your Relay instance (e.g. http://localhost:9069 or https://relay.example.com)",
+      "description": "Base URL of your Relay instance (default: https://relay.kshiyo.dpdns.org)",
       "type": "textfield",
-      "required": true,
-      "default": "http://localhost:9069"
+      "required": false,
+      "default": "https://relay.kshiyo.dpdns.org",
+      "placeholder": "https://relay.kshiyo.dpdns.org"
     },
     {
       "name": "playerPath",

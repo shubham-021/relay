@@ -20,7 +20,7 @@ Browse your Relay TorBox library, fetch CDN links, and launch videos directly in
 
 ## Setup (Local Development in Raycast)
 
-1. Make sure your Relay server is running (default `http://localhost:9069`).
+1. Make sure your Relay server is accessible (default `https://relay.kshiyo.dpdns.org` or your self-hosted URL).
 2. Install dependencies inside `raycast/`:
    ```bash
    cd raycast

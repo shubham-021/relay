@@ -1,10 +1,17 @@
-import { Clipboard, showHUD, showToast, Toast } from "@raycast/api";
+import {
+  Clipboard,
+  environment,
+  showHUD,
+  showToast,
+  Toast,
+} from "@raycast/api";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fetchCdnLink, fetchProgress } from "./api";
-import { getPlayerConfig } from "./preferences";
+import { getAccessToken } from "./oauth";
+import { getPlayerConfig, getServerUrl } from "./preferences";
 import type { PlayableTarget, PlayerConfig } from "./types";
 
 let isRequestInFlight = false;
@@ -128,6 +135,92 @@ function buildCliArgs(
   return args;
 }
 
+function buildMpvSocketPath(torrentId?: number, fileId?: number): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\mpv_relay_${torrentId ?? "x"}_${fileId ?? "x"}_${rand}`;
+  }
+  return `/tmp/mpv_relay_${torrentId ?? "x"}_${fileId ?? "x"}_${rand}.sock`;
+}
+
+function detectMpvSupport(resolvedPath: string): {
+  supported: boolean;
+  isIina: boolean;
+} {
+  const lower = resolvedPath.toLowerCase();
+  const base = path.basename(lower, ".app");
+  if (base === "mpv" || base.includes("mpv")) {
+    return { supported: true, isIina: false };
+  }
+  if (base.includes("iina")) {
+    return { supported: true, isIina: true };
+  }
+  return { supported: false, isIina: false };
+}
+
+function findNodeBinary(): string {
+  if (
+    process.execPath &&
+    path.basename(process.execPath).toLowerCase().includes("node")
+  ) {
+    return process.execPath;
+  }
+  const candidates = [
+    "/usr/local/bin/node",
+    "/opt/homebrew/bin/node",
+    path.join(os.homedir(), ".bun/bin/bun"),
+    "node",
+  ];
+  for (const candidate of candidates) {
+    if (candidate === "node" || fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "node";
+}
+
+function spawnMpvWatcher(
+  socketPath: string,
+  reportUrl: string,
+  playToken: string,
+  bearerToken?: string,
+): void {
+  const scriptCandidates = [
+    path.join(environment.assetsPath, "mpv-watcher.mjs"),
+    path.resolve(__dirname, "assets/mpv-watcher.mjs"),
+    path.resolve(__dirname, "../assets/mpv-watcher.mjs"),
+  ];
+  const scriptPath = scriptCandidates.find((p) => fs.existsSync(p));
+  if (!scriptPath) {
+    console.error("Watcher script not found in:", scriptCandidates);
+    return;
+  }
+
+  // Remove any stale socket at this path before player starts
+  try {
+    fs.rmSync(socketPath, { force: true });
+  } catch {
+    // ignore
+  }
+
+  const nodeBin = findNodeBinary();
+  const args = [scriptPath, socketPath, reportUrl, playToken];
+  if (bearerToken) {
+    args.push(bearerToken);
+  }
+
+  const watcher = spawn(nodeBin, args, {
+    detached: true,
+    stdio: "ignore",
+  });
+
+  watcher.on("error", (err) => {
+    console.error("Failed to spawn mpv watcher:", err);
+  });
+
+  watcher.unref();
+}
+
 export async function launchInConfiguredPlayer(
   target: PlayableTarget,
   overrideConfig?: PlayerConfig,
@@ -163,7 +256,9 @@ export async function launchInConfiguredPlayer(
   });
 
   try {
-    const { url } = await fetchCdnLink(target);
+    const { url, playToken } = await fetchCdnLink(target);
+    const reportUrl = `${getServerUrl()}/api/progress`;
+    const bearerToken = await getAccessToken().catch(() => undefined);
 
     let startSeconds = 0;
     if (config.resumePlayback) {
@@ -184,15 +279,31 @@ export async function launchInConfiguredPlayer(
     const isAppBundle = resolvedPath.toLowerCase().endsWith(".app");
     const playerName = path.basename(resolvedPath, ".app");
 
+    const mpvSupport = detectMpvSupport(resolvedPath);
+    let socketPath: string | undefined;
+    if (mpvSupport.supported && playToken) {
+      socketPath = buildMpvSocketPath(target.torrent_id, target.file_id);
+    }
+
     if (isAppBundle) {
       const extraArgs = config.playerArgs
         ? splitArgs(config.playerArgs).map((a) => a.replaceAll("{url}", url))
         : [];
+      if (socketPath) {
+        if (mpvSupport.isIina) {
+          extraArgs.push(`--mpv-input-ipc-server=${socketPath}`);
+        } else {
+          extraArgs.push(`--input-ipc-server=${socketPath}`);
+        }
+      }
       const openArgs = ["-a", resolvedPath, url];
       if (extraArgs.length > 0) {
         openArgs.push("--args", ...extraArgs);
       }
       await spawnDetached("open", openArgs);
+      if (socketPath && playToken) {
+        spawnMpvWatcher(socketPath, reportUrl, playToken, bearerToken);
+      }
       await toast.hide();
       await showHUD(`Playing "${target.title}" in ${playerName}`);
       return "launched";
@@ -200,7 +311,17 @@ export async function launchInConfiguredPlayer(
 
     const resumeFlag = getResumeFlag(resolvedPath, startSeconds);
     const cliArgs = buildCliArgs(config.playerArgs, url, resumeFlag);
+    if (socketPath) {
+      if (mpvSupport.isIina) {
+        cliArgs.unshift(`--mpv-input-ipc-server=${socketPath}`);
+      } else {
+        cliArgs.unshift(`--input-ipc-server=${socketPath}`);
+      }
+    }
     await spawnDetached(resolvedPath, cliArgs);
+    if (socketPath && playToken) {
+      spawnMpvWatcher(socketPath, reportUrl, playToken, bearerToken);
+    }
 
     await toast.hide();
     const resumeSuffix = resumeFlag

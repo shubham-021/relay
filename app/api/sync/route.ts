@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { syncAccount } from "@/lib/sync";
 import { getAccountById, verifyUserAccountAccess } from "@/lib/db";
 import { acquireLock, releaseLock } from "@/lib/in-flight";
@@ -12,8 +12,8 @@ const syncSchema = z.object({
 
 export async function POST(request: Request) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
@@ -28,11 +28,11 @@ export async function POST(request: Request) {
 
     // Verify account belongs to user
     const account = getAccountById(account_id);
-    if (!account || !verifyUserAccountAccess(session.userId, account_id)) {
+    if (!account || !verifyUserAccountAccess(userId, account_id)) {
       return NextResponse.json({ error: "Account not found or access denied" }, { status: 404 });
     }
 
-    const lockKey = `${session.userId}:sync`;
+    const lockKey = `${userId}:sync`;
     const controller = acquireLock(lockKey);
     if (!controller) {
       return NextResponse.json({ error: "A sync for an account is already in progress." }, { status: 409 });

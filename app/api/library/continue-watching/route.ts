@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { getContinueWatching } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const rows = getContinueWatching(session.userId, 5);
+    const rows = getContinueWatching(userId, 5);
 
     const items = rows.map((row) => {
       const duration = row.duration_seconds;

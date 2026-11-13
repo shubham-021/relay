@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { verifyUserAccountAccess, upsertWatchedPosition } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +13,8 @@ const completeSchema = z.object({
 
 export async function POST(request: Request) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
@@ -30,14 +30,14 @@ export async function POST(request: Request) {
 
     const { account_id, torrent_id, file_id } = parsed.data;
 
-    if (!verifyUserAccountAccess(session.userId, account_id)) {
+    if (!verifyUserAccountAccess(userId, account_id)) {
       return NextResponse.json(
         { error: "Account not found or access denied" },
         { status: 403 }
       );
     }
 
-    upsertWatchedPosition(session.userId, account_id, torrent_id, file_id, 0, null, true);
+    upsertWatchedPosition(userId, account_id, torrent_id, file_id, 0, null, true);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "relay",
+  "title": "Relay",
+  "description": "Browse your Relay library, fetch TorBox CDN links, and launch videos directly in your local player.",
+  "icon": "icon.png",
+  "author": "relay",
+  "categories": [
+    "Media"
+  ],
+  "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
+  "commands": [
+    {
+      "name": "relay",
+      "title": "Relay",
+      "description": "Browse Movies, Shows, and Other files, fetch CDN links, and play videos",
+      "mode": "view"
+    },
+    {
+      "name": "configure-player",
+      "title": "Configure Relay Player",
+      "description": "Configure your local video player binary path and playback settings",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "serverUrl",
+      "title": "Relay Server URL",
+      "description": "Base URL of your Relay instance (e.g. http://localhost:9069 or https://relay.example.com)",
+      "type": "textfield",
+      "required": true,
+      "default": "http://localhost:9069"
+    },
+    {
+      "name": "playerPath",
+      "title": "Player Binary / App Path",
+      "description": "Path to your video player binary or .app bundle (e.g. /Applications/IINA.app, /opt/homebrew/bin/mpv)",
+      "type": "textfield",
+      "required": false,
+      "placeholder": "/Applications/IINA.app"
+    },
+    {
+      "name": "playerArgs",
+      "title": "Extra Player Arguments",
+      "description": "Optional CLI arguments passed to the player (use {url} to place the CDN link manually)",
+      "type": "textfield",
+      "required": false,
+      "placeholder": "--fullscreen"
+    },
+    {
+      "name": "resumePlayback",
+      "title": "Resume from Saved Position",
+      "description": "Pass a start timestamp flag when launching supported CLI players (mpv, iina-cli, vlc)",
+      "type": "checkbox",
+      "label": "Resume from last watched position",
+      "default": true,
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.93.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.11",
+    "@types/node": "^20.17.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0"
+  },
+  "scripts": {
+    "build": "ray build -e dist -o dist",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "typecheck": "tsc --noEmit"
+  }
+}

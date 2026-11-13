@@ -29,7 +29,8 @@ function getBaseUrl(request: Request): string {
         return process.env.PUBLIC_URL.replace(/\/+$/, "");
     }
 
-    return `https://${host || "localhost:3000"}`;
+    const proto = request.headers.get("x-forwarded-proto") || "http";
+    return `${proto}://${host || "localhost:3000"}`;
 }
 
 export async function GET(request: Request) {

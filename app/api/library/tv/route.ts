@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { getTvShowsForUser } from "@/lib/db";
 import { getLibEtag, validateETag } from "@/lib/library-etag";
 
@@ -7,19 +7,19 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
     const accountIdParam = request.nextUrl.searchParams.get("account_id");
     const accountId = accountIdParam ? parseInt(accountIdParam, 10) : undefined;
 
-    const etag = getLibEtag(session.userId, accountId);
+    const etag = getLibEtag(userId, accountId);
     const notModified = validateETag(request, etag);
     if (notModified) return notModified;
 
-    const rawShows = getTvShowsForUser(session.userId, accountId);
+    const rawShows = getTvShowsForUser(userId, accountId);
 
     const shows = rawShows.map((row) => ({
       show_title: row.show_title,

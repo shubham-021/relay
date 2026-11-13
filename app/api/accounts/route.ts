@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import {
   getAccountByEmail,
   getAccountById,
@@ -22,12 +23,12 @@ const addAccountSchema = z.object({
 
 export async function GET(request: Request) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const accounts = getAccountsByUserId(session.userId);
+    const accounts = getAccountsByUserId(userId);
     return NextResponse.json({ accounts });
   } catch (error) {
     console.error("Get accounts error:", error);

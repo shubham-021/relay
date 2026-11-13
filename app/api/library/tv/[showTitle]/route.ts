@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { getTvShowDetailsForUser } from "@/lib/db";
 import { formatBytes } from "@/lib/utils";
 import { getLibEtag, validateETag } from "@/lib/library-etag";
@@ -12,22 +12,22 @@ export async function GET(
   { params }: { params: Promise<{ showTitle: string }> }
 ) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
     const { showTitle: rawShowTitle } = await params;
     const showTitle = decodeURIComponent(rawShowTitle);
 
-    const baseEtag = getLibEtag(session.userId);
+    const baseEtag = getLibEtag(userId);
     const showHash = createHash("md5").update(`${showTitle}:${baseEtag}`).digest("hex");
     const etag = `W/"tvshow-${showHash}"`;
 
     const notModified = validateETag(request, etag);
     if (notModified) return notModified;
 
-    const rawEpisodes = getTvShowDetailsForUser(session.userId, showTitle);
+    const rawEpisodes = getTvShowDetailsForUser(userId, showTitle);
     if (!rawEpisodes || rawEpisodes.length === 0) {
       return NextResponse.json({ error: "Show not found" }, { status: 404 });
     }

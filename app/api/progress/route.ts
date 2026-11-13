@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { getWatchedPosition, upsertWatchedPosition } from "@/lib/db";
 import { verifyPlayToken } from "@/lib/crypto";
 
@@ -15,8 +15,8 @@ const progressSchema = z.object({
 
 export async function GET(request: Request) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json(
         { error: "Not authenticated" },
         { status: 401 }
@@ -35,7 +35,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const row = getWatchedPosition(session.userId, accountId, torrentId, fileId);
+    const row = getWatchedPosition(userId, accountId, torrentId, fileId);
     if (!row) {
       return NextResponse.json({ position: 0, duration: null, completed: false });
     }

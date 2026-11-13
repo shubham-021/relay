@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getSession } from "@/lib/session";
+import { getAuthenticatedUserId } from "@/lib/api-auth";
 import { verifyUserAccountAccess } from "@/lib/db";
 import { getValidAccessToken, requestCdnLink } from "@/lib/torbox";
 import { mintPlayToken } from "@/lib/crypto";
@@ -14,8 +14,8 @@ const cdnLinkSchema = z.object({
 
 export async function POST(request: Request) {
   try {
-    const session = await getSession();
-    if (!session.userId) {
+    const userId = await getAuthenticatedUserId(request);
+    if (!userId) {
       return NextResponse.json(
         { error: "Not authenticated" },
         { status: 401 }
@@ -35,14 +35,14 @@ export async function POST(request: Request) {
     const { torrent_id, file_id, account_id } = parsed.data;
 
     // Verify the user owns this account
-    if (!verifyUserAccountAccess(session.userId, account_id)) {
+    if (!verifyUserAccountAccess(userId, account_id)) {
       return NextResponse.json(
         { error: "Account not found or access denied" },
         { status: 404 }
       );
     }
 
-    const lockKey = `${session.userId}:cdn`;
+    const lockKey = `${userId}:cdn`;
     const controller = acquireLock(lockKey);
     if (!controller) {
       return NextResponse.json({ error: "A CDN link request is already in progress" }, { status: 409 });
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
       // Mint a short-lived HMAC token so the local daemon can report playback
       // progress back to /api/progress (runs after ownership was verified above).
       const playToken = mintPlayToken({
-        userId: session.userId,
+        userId,
         accountId: account_id,
         torrentId: torrent_id,
         fileId: file_id,

@@ -130,12 +130,20 @@ async function fetchWithETag<TRaw, TOut = TRaw>(
     // If an extract function exists, the cached data might be from before
     // the extract migration (i.e. it's the raw wrapper object, not the
     // extracted value). Detect this and re-extract + re-cache.
-    if (extract && !Array.isArray(cachedData) && typeof cachedData === "object" && cachedData !== null) {
+    if (
+      extract &&
+      !Array.isArray(cachedData) &&
+      typeof cachedData === "object" &&
+      cachedData !== null
+    ) {
       try {
         const reExtracted = extract(cachedData as unknown as TRaw);
         cache.set(
           scopedKey,
-          JSON.stringify({ etag: cachedEtag, data: reExtracted } satisfies CachedEntry<TOut>),
+          JSON.stringify({
+            etag: cachedEtag,
+            data: reExtracted,
+          } satisfies CachedEntry<TOut>),
         );
         return reExtracted;
       } catch {

@@ -145,4 +145,3 @@ export interface ProgressResponse {
   duration: number | null;
   completed: boolean;
 }
-

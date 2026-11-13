@@ -10,7 +10,8 @@ export function getServerUrl(): string {
   const raw = (prefs.serverUrl || "https://relay.kshiyo.dpdns.org").trim();
   const normalized = raw.replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(normalized)) {
-    return normalized.startsWith("localhost") || normalized.startsWith("127.0.0.1")
+    return normalized.startsWith("localhost") ||
+      normalized.startsWith("127.0.0.1")
       ? `http://${normalized}`
       : `https://${normalized}`;
   }

@@ -25,8 +25,8 @@ export function buildOtherFileAccessories(
 }
 
 export function OtherFilesList({ onLoggedOut }: OtherFilesListProps) {
-  const [files, setFiles] = useState<OtherFileItem[]>(
-    () => getCachedArray<OtherFileItem>("other"),
+  const [files, setFiles] = useState<OtherFileItem[]>(() =>
+    getCachedArray<OtherFileItem>("other"),
   );
   const [isLoading, setIsLoading] = useState(true);
 

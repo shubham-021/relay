@@ -30,8 +30,8 @@ export function buildShowAccessories(
 
 export function ShowsList({ onLoggedOut }: ShowsListProps) {
   const { push } = useNavigation();
-  const [shows, setShows] = useState<TvShowSummary[]>(
-    () => getCachedArray<TvShowSummary>("shows"),
+  const [shows, setShows] = useState<TvShowSummary[]>(() =>
+    getCachedArray<TvShowSummary>("shows"),
   );
   const [isLoading, setIsLoading] = useState(true);
 

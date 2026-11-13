@@ -73,6 +73,7 @@ export function RelayManagementActions({
         onAction={() => push(<ConfigurePlayerForm />)}
       />
       <Action
+        // eslint-disable-next-line @raycast/prefer-title-case
         title="Sync TorBox Library"
         icon={Icon.Cloud}
         shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
@@ -151,6 +152,7 @@ export function PlayableActionPanel({
           onAction={handlePlay}
         />
         <Action
+          // eslint-disable-next-line @raycast/prefer-title-case
           title="Copy CDN Link"
           icon={Icon.Link}
           shortcut={{ modifiers: ["cmd"], key: "c" }}

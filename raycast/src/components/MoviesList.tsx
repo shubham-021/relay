@@ -25,8 +25,8 @@ export function buildMovieAccessories(movie: MovieItem): List.Item.Accessory[] {
 }
 
 export function MoviesList({ onLoggedOut }: MoviesListProps) {
-  const [movies, setMovies] = useState<MovieItem[]>(
-    () => getCachedArray<MovieItem>("movies"),
+  const [movies, setMovies] = useState<MovieItem[]>(() =>
+    getCachedArray<MovieItem>("movies"),
   );
   const [isLoading, setIsLoading] = useState(true);
 

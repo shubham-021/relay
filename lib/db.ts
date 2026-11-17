@@ -1,5 +1,9 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
+import {
+  ensureMediaCompositeKeyMigration,
+  ensureForeignKeysRepair,
+} from "./media-migration";
 
 if (!existsSync("./data")) {
   mkdirSync("./data", { recursive: true });
@@ -19,7 +23,36 @@ try {
     globalForDb.__domaDb.query("PRAGMA busy_timeout = 5000").run();
     globalForDb.__domaDb.query("PRAGMA foreign_keys = ON").run();
 
-    // Schema Migration: detect old schema and migrate 
+    // Media composite-PK migration (LIB_FIX_PLAN.md Phase 1):
+    // tmdb_id alone is NOT unique across TMDB categories — movie/1398 = Stalker (1979),
+    // tv/1398 = The Sopranos. The old single-column PK made the two upserts overwrite
+    // each other's poster/title/metadata. Rebuild with PRIMARY KEY (tmdb_id, media_type).
+    // The migration itself lives in lib/media-migration.ts so scripts/migrate-media-db.ts
+    // can run the identical migration against a prod database file.
+    try {
+      if (ensureMediaCompositeKeyMigration(globalForDb.__domaDb)) {
+        console.log("[DB Migration] media table rebuilt with composite key (tmdb_id, media_type).");
+      }
+    } catch (e) {
+      console.error("[DB Migration] media composite-key migration failed:", e);
+    }
+
+    // FK self-heal, AFTER the composite-PK migration:
+    //  1. an older migration version left dangling FKs (`REFERENCES "media_legacy"(...)`)
+    //     that made every write fail with "no such table: main.media_legacy";
+    //  2. the composite PK itself invalidates pre-existing single-column
+    //     `REFERENCES media(tmdb_id)` FKs ("foreign key mismatch" on writes).
+    // Order matters: the migration is what creates variant 2, so repair must follow it.
+    try {
+      const repaired = ensureForeignKeysRepair(globalForDb.__domaDb);
+      if (repaired.length > 0) {
+        console.log(`[DB Migration] repaired invalid foreign keys in: ${repaired.join(", ")}`);
+      }
+    } catch (e) {
+      console.error("[DB Migration] foreign-key repair failed:", e);
+    }
+
+    // Schema Migration: detect old schema and migrate
     // Check if accounts table has old webdav columns
     try {
       const tableInfo = globalForDb.__domaDb
@@ -39,6 +72,20 @@ try {
       }
     } catch (_) {
       // No existing accounts table — fresh install
+    }
+
+    // Media composite-PK migration (LIB_FIX_PLAN.md Phase 1):
+    // tmdb_id alone is NOT unique across TMDB categories — movie/1398 = Stalker (1979),
+    // tv/1398 = The Sopranos. The old single-column PK made the two upserts overwrite
+    // each other's poster/title/metadata. Rebuild with PRIMARY KEY (tmdb_id, media_type).
+    // The migration itself lives in lib/media-migration.ts so scripts/migrate-media-db.ts
+    // can run the identical migration against a prod database file.
+    try {
+      if (ensureMediaCompositeKeyMigration(globalForDb.__domaDb)) {
+        console.log("[DB Migration] media table rebuilt with composite key (tmdb_id, media_type).");
+      }
+    } catch (e) {
+      console.error("[DB Migration] media composite-key migration failed:", e);
     }
 
     // users
@@ -90,19 +137,20 @@ try {
       )
       .run();
 
-    // media
+    // media (composite PK: tmdb_id is only unique per TMDB category)
     globalForDb.__domaDb
       .query(
         `
       CREATE TABLE IF NOT EXISTS media (
-        tmdb_id      INTEGER PRIMARY KEY,
+        tmdb_id      INTEGER NOT NULL,
         title        TEXT    NOT NULL,
         year         TEXT,
         poster_url   TEXT,
         backdrop_url TEXT,
         overview     TEXT,
         media_type   TEXT    NOT NULL DEFAULT 'movie', -- 'movie' | 'tv'
-        updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+        updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tmdb_id, media_type)
       )
     `
       )
@@ -123,7 +171,7 @@ try {
         size               INTEGER NOT NULL DEFAULT 0,
         mime_type          TEXT,
         torrent_hash       TEXT,
-        tmdb_id            INTEGER REFERENCES media(tmdb_id) ON DELETE SET NULL,
+        tmdb_id            INTEGER,
         raw_title          TEXT,
         raw_year           TEXT,
         media_type         TEXT DEFAULT 'other',      -- 'movie' | 'tv' | 'other'
@@ -140,12 +188,19 @@ try {
       .run();
 
     // tv_episodes
+    // NOTE: remote_list_cache / torrents / tv_episodes deliberately carry NO foreign
+    // key to media. media's primary key is the composite (tmdb_id, media_type) — a
+    // single-column `REFERENCES media(tmdb_id)` is not a valid parent key (its column
+    // set doesn't match any unique index of the parent) and fails with "foreign key
+    // mismatch" the moment PRAGMA foreign_keys = ON. Nothing deletes media rows
+    // anyway, so the old ON DELETE SET NULL / CASCADE behavior never fired;
+    // referential integrity is guaranteed by app logic.
     globalForDb.__domaDb
       .query(
         `
       CREATE TABLE IF NOT EXISTS tv_episodes (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        show_tmdb_id   INTEGER NOT NULL REFERENCES media(tmdb_id) ON DELETE CASCADE,
+        show_tmdb_id   INTEGER NOT NULL,
         season_number  INTEGER NOT NULL,
         episode_number INTEGER NOT NULL,
         episode_title  TEXT,
@@ -157,6 +212,11 @@ try {
     `
       )
       .run();
+    // NOTE: tv_episodes deliberately has NO foreign key to media. media's primary key
+    // is (tmdb_id, media_type) — a single-column `REFERENCES media(tmdb_id)` is not a
+    // valid parent key (its column set doesn't match any unique index) and fails with
+    // "foreign key mismatch" the moment PRAGMA foreign_keys = ON. Referential
+    // integrity is guaranteed by app logic: sync writes media rows before episodes.
 
     // metadata_cache (legacy)
     globalForDb.__domaDb
@@ -227,7 +287,7 @@ try {
         torrent_hash       TEXT,
         primary_media_type TEXT DEFAULT 'other',
         primary_title      TEXT,
-        tmdb_id            INTEGER REFERENCES media(tmdb_id) ON DELETE SET NULL,
+        tmdb_id            INTEGER,
         synced_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (account_id, torrent_id)
       )
@@ -455,9 +515,14 @@ export function updateAccountUpdatedTime(accountId: number) {
 
 // media & tv_episodes
 
-export function getMediaByTmdbId(tmdbId: number) {
+export function getMediaByTmdbId(tmdbId: number, mediaType?: "movie" | "tv") {
   if (!db) return null;
   try {
+    if (mediaType) {
+      return db
+        .query("SELECT * FROM media WHERE tmdb_id = ? AND media_type = ?")
+        .get(tmdbId, mediaType) as any;
+    }
     return db.query("SELECT * FROM media WHERE tmdb_id = ?").get(tmdbId) as any;
   } catch (e) {
     console.error("getMediaByTmdbId error:", e);
@@ -479,11 +544,10 @@ export function upsertMedia(
     db.query(
       `INSERT INTO media (tmdb_id, title, year, poster_url, media_type, backdrop_url, overview, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(tmdb_id) DO UPDATE SET
+       ON CONFLICT(tmdb_id, media_type) DO UPDATE SET
          title        = excluded.title,
          year         = excluded.year,
          poster_url   = excluded.poster_url,
-         media_type   = excluded.media_type,
          backdrop_url = COALESCE(excluded.backdrop_url, media.backdrop_url),
          overview     = COALESCE(excluded.overview, media.overview),
          updated_at   = CURRENT_TIMESTAMP`
@@ -613,7 +677,7 @@ export function getFilesForAccount(accountId: number) {
            m.year        AS media_year,
            m.poster_url  AS media_poster_url
          FROM remote_list_cache r
-         LEFT JOIN media m ON r.tmdb_id = m.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          WHERE r.account_id = ?
          ORDER BY COALESCE(m.title, r.show_title, r.raw_title, r.filename) ASC`
       )
@@ -650,7 +714,7 @@ export function getMoviesForAccount(accountId: number) {
            m.backdrop_url AS media_backdrop_url,
            m.overview     AS media_overview
          FROM remote_list_cache r
-         LEFT JOIN media m ON r.tmdb_id = m.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          WHERE r.account_id = ? AND r.media_type = 'movie'
          ORDER BY COALESCE(m.title, r.raw_title, r.filename) ASC`
       )
@@ -676,7 +740,7 @@ export function getTvShowsForAccount(accountId: number) {
            COUNT(r.id) AS episode_count,
            MIN(r.parsed_year) AS start_year
          FROM media m
-         JOIN remote_list_cache r ON r.tmdb_id = m.tmdb_id
+         JOIN remote_list_cache r ON r.tmdb_id = m.tmdb_id AND m.media_type = 'tv'
          WHERE r.account_id = ? AND r.media_type = 'tv'
          GROUP BY m.tmdb_id
 
@@ -733,7 +797,7 @@ export function getTvShowDetailsForAccount(accountId: number, showTitle: string)
            e.overview     AS episode_overview,
            e.still_url    AS episode_still_url
          FROM remote_list_cache r
-         LEFT JOIN media m ON r.tmdb_id = m.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          LEFT JOIN tv_episodes e ON (r.tmdb_id = e.show_tmdb_id AND r.season_number = e.season_number AND r.episode_number = e.episode_number)
          WHERE r.account_id = ? AND r.media_type = 'tv' AND LOWER(COALESCE(m.title, r.show_title, r.raw_title)) = LOWER(?)
          ORDER BY r.season_number ASC, r.episode_number ASC`
@@ -781,6 +845,134 @@ export function clearRemoteFilesForAccount(accountId: number) {
     db.query("DELETE FROM torrents WHERE account_id = ?").run(accountId);
   } catch (e) {
     console.error("clearRemoteFilesForAccount error:", e);
+  }
+}
+
+// ── Atomic sync commit (LIB_FIX_PLAN.md Phase 4) ───────────────────────────────
+
+export interface PendingTorrentRecord {
+  torrentId: number;
+  torrentName: string | null;
+  torrentHash: string | null;
+  primaryMediaType: string;
+  primaryTitle: string | null;
+  tmdbId: number | null;
+}
+
+export interface PendingFileRecord {
+  torrentId: number;
+  fileId: number;
+  remotePath: string;
+  filename: string;
+  shortName: string | null;
+  size: number;
+  mimeType: string;
+  torrentHash: string | null;
+  tmdbId: number | null;
+  rawTitle: string | null;
+  rawYear: string | null;
+  mediaType: "movie" | "tv" | "other";
+  showTitle: string | null;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  episodeEndNumber: number | null;
+  parsedYear: string | null;
+}
+
+/**
+ * Atomically replace an account's remote_list_cache + torrents rows with a freshly
+ * built set. The DELETE and all INSERTs run in one transaction, so a crash/abort
+ * mid-sync can never leave a half-cleared library (old plan: clear-then-insert loop).
+ */
+export function replaceAccountFiles(
+  accountId: number,
+  torrents: PendingTorrentRecord[],
+  files: PendingFileRecord[]
+) {
+  if (!db) return;
+  try {
+    const tx = db.transaction(() => {
+      db.query("DELETE FROM remote_list_cache WHERE account_id = ?").run(accountId);
+      db.query("DELETE FROM torrents WHERE account_id = ?").run(accountId);
+      for (const t of torrents) {
+        upsertTorrent(
+          accountId,
+          t.torrentId,
+          t.torrentName,
+          t.torrentHash,
+          t.primaryMediaType,
+          t.primaryTitle,
+          t.tmdbId
+        );
+      }
+      for (const f of files) {
+        upsertRemoteFile(
+          accountId,
+          f.torrentId,
+          f.fileId,
+          f.remotePath,
+          f.filename,
+          f.shortName,
+          f.size,
+          f.mimeType,
+          f.torrentHash,
+          f.tmdbId,
+          f.rawTitle,
+          f.rawYear,
+          f.mediaType,
+          f.showTitle,
+          f.seasonNumber,
+          f.episodeNumber,
+          f.episodeEndNumber,
+          f.parsedYear
+        );
+      }
+    });
+    tx();
+  } catch (e) {
+    console.error("replaceAccountFiles error:", e);
+    throw e;
+  }
+}
+
+/**
+ * Reuse a previous TMDB resolution for the same (parsed title, year, media type)
+ * instead of re-querying the API on every resync. Only trusted when the stored media
+ * row's title normalizes to the same string — prevents propagating a wrong match
+ * from before the ranking fix (e.g. "Enemy" cached as "Enemy Empire").
+ * Returns { tmdbId, mediaTitle } or null.
+ */
+export function getCachedTmdbResolution(
+  rawTitle: string,
+  rawYear: string | null,
+  mediaType: "movie" | "tv",
+  titleMatches: (mediaTitle: string | null | undefined, tmdbId?: number) => boolean
+): { tmdbId: number; mediaTitle: string | null } | null {
+  if (!db) return null;
+  try {
+    const rows = db
+      .query(
+        `SELECT DISTINCT r.tmdb_id, m.title AS media_title
+         FROM remote_list_cache r
+         JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
+         WHERE r.media_type = ? AND LOWER(r.raw_title) = LOWER(?)
+           AND COALESCE(r.raw_year, '') = COALESCE(?, '')
+           AND r.tmdb_id IS NOT NULL
+         LIMIT 5`
+      )
+      .all(mediaType, rawTitle, rawYear ?? "") as {
+      tmdb_id: number;
+      media_title: string | null;
+    }[];
+    for (const row of rows) {
+      if (titleMatches(row.media_title, row.tmdb_id)) {
+        return { tmdbId: row.tmdb_id, mediaTitle: row.media_title };
+      }
+    }
+    return null;
+  } catch (e) {
+    console.error("getCachedTmdbResolution error:", e);
+    return null;
   }
 }
 
@@ -872,7 +1064,7 @@ export function getTorrentIdsForTvShow(accountId: number, showTitle: string): nu
       .query(
         `SELECT DISTINCT r.torrent_id
          FROM remote_list_cache r
-         LEFT JOIN media m ON r.tmdb_id = m.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          WHERE r.account_id = ? AND r.media_type = 'tv'
            AND LOWER(COALESCE(m.title, r.show_title, r.raw_title)) = LOWER(?)`
       )
@@ -915,7 +1107,7 @@ export function getMoviesForUser(userId: number, accountId?: number) {
            w.hidden
          FROM remote_list_cache r
          JOIN user_accounts ua ON r.account_id = ua.account_id
-         LEFT JOIN media m ON r.tmdb_id = m.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          LEFT JOIN user_watched w ON w.user_id = ua.user_id AND w.account_id = r.account_id AND w.torrent_id = r.torrent_id AND w.file_id = r.file_id
          WHERE ua.user_id = ? AND r.media_type = 'movie'`;
     
@@ -946,7 +1138,7 @@ export function getTvShowsForUser(userId: number, accountId?: number) {
            COUNT(r.id) AS episode_count,
            MIN(r.parsed_year) AS start_year
          FROM media m
-         JOIN remote_list_cache r ON r.tmdb_id = m.tmdb_id
+         JOIN remote_list_cache r ON r.tmdb_id = m.tmdb_id AND m.media_type = 'tv'
          JOIN user_accounts ua ON r.account_id = ua.account_id
          WHERE ua.user_id = ? AND r.media_type = 'tv'`;
          
@@ -1015,7 +1207,7 @@ export function getTvShowDetailsForUser(userId: number, showTitle: string) {
            t.torrent_name
          FROM remote_list_cache r
          JOIN user_accounts ua ON r.account_id = ua.account_id
-         LEFT JOIN media m ON r.tmdb_id = m.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          LEFT JOIN tv_episodes e ON (r.tmdb_id = e.show_tmdb_id AND r.season_number = e.season_number AND r.episode_number = e.episode_number)
          LEFT JOIN user_watched w ON w.user_id = ua.user_id AND w.account_id = r.account_id AND w.torrent_id = r.torrent_id AND w.file_id = r.file_id
          LEFT JOIN torrents t ON t.account_id = r.account_id AND t.torrent_id = r.torrent_id
@@ -1274,7 +1466,7 @@ export function getContinueWatching(userId: number, limit = 5) {
          JOIN user_accounts ua ON ua.user_id = w.user_id AND ua.account_id = w.account_id
          LEFT JOIN remote_list_cache r
            ON r.account_id = w.account_id AND r.torrent_id = w.torrent_id AND r.file_id = w.file_id
-         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          LEFT JOIN tv_episodes e
            ON r.tmdb_id = e.show_tmdb_id
           AND r.season_number = e.season_number
@@ -1312,7 +1504,7 @@ export function getContinueWatching(userId: number, limit = 5) {
          JOIN user_accounts ua ON ua.user_id = w.user_id AND ua.account_id = w.account_id
          LEFT JOIN remote_list_cache r
            ON r.account_id = w.account_id AND r.torrent_id = w.torrent_id AND r.file_id = w.file_id
-         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          LEFT JOIN tv_episodes e
            ON r.tmdb_id = e.show_tmdb_id
           AND r.season_number = e.season_number
@@ -1332,7 +1524,7 @@ export function getContinueWatching(userId: number, limit = 5) {
                 w.hidden as hidden
          FROM remote_list_cache r
          JOIN user_accounts ua ON ua.account_id = r.account_id
-         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id
+         LEFT JOIN media m ON m.tmdb_id = r.tmdb_id AND m.media_type = r.media_type
          LEFT JOIN tv_episodes e
            ON r.tmdb_id = e.show_tmdb_id AND r.season_number = e.season_number AND r.episode_number = e.episode_number
          LEFT JOIN user_watched w 

@@ -5,25 +5,38 @@
  * 2. Fetch all torrents + files via GET /v1/api/torrents/mylist.
  * 3. Filter files by minimum size threshold.
  * 4. Parse filename using lib/parser (detecting TV Show S01E01 / Movie / Other).
- * 5. Fetch rich metadata (posters, backdrops, episode titles, stills) from TMDB.
- * 6. Save structured records into remote_list_cache, media, and tv_episodes tables.
+ * 5. Fetch rich metadata (posters, backdrops, episode titles, stills) from TMDB via lib/tmdb
+ *    (ranked matching — see LIB_FIX_PLAN.md Phase 3).
+ * 6. Commit records into remote_list_cache and torrents ATOMICALLY (Phase 4):
+ *    all files are processed first, then swapped in inside a single transaction so an
+ *    abort/crash mid-sync can never leave a half-cleared library.
  */
 
 import {
   updateAccountSyncTime,
   updateAccountUpdatedTime,
-  clearRemoteFilesForAccount,
-  upsertRemoteFile,
   upsertMedia,
   upsertTvEpisode,
   upsertTorrent,
+  upsertRemoteFile,
+  replaceAccountFiles,
+  getCachedTmdbResolution,
+  type PendingTorrentRecord,
+  type PendingFileRecord,
 } from "./db";
 import { getValidAccessToken, fetchTorrentList } from "./torbox";
 import { MIN_FILE_SIZE_BYTES, MIN_SAMPLE_FILE_SIZE_BYTES } from "./torbox-config";
 import { VIDEO_EXTENSIONS, EXCLUDED_EXTENSIONS } from "./constants";
 import { parseMediaFilename, type ParsedMedia } from "./parser";
-
-const TMDB_API_KEY = process.env.TMDB_API_KEY;
+import {
+  searchTmdbMovie,
+  searchTmdbTv,
+  fetchSeasonEpisodes,
+  normalizeTitle,
+  isTitleMatch,
+  getCachedAlternativeTitles,
+  type TmdbSearchOutcome,
+} from "./tmdb";
 
 function isVideoFile(filename: string, mimetype?: string): boolean {
   // Prefer mimetype check if available
@@ -33,108 +46,132 @@ function isVideoFile(filename: string, mimetype?: string): boolean {
   return VIDEO_EXTENSIONS.has(ext);
 }
 
-// In-memory set to avoid re-fetching season details multiple times in a single sync
-const fetchedSeasonKeys = new Set<string>();
+interface BuildOptions {
+  skipSizeFilter?: boolean;
+  signal?: AbortSignal;
+  /** Per-call set of already-fetched (show, season) pairs — never module-level, it leaks. */
+  fetchedSeasons?: Set<string>;
+  /** Set to true by buildFileRecord when TMDB errored (vs a clean no-match). */
+  onTmdbError?: () => void;
+}
 
-async function searchTmdbMovie(title: string, year?: string, signal?: AbortSignal) {
-  if (!TMDB_API_KEY) return null;
+/** Look up a previous resolution for this exact title/year/type before hitting the API. */
+function lookupCachedResolution(
+  parsed: ParsedMedia,
+  mediaType: "movie" | "tv"
+): number | null {
+  const cached = getCachedTmdbResolution(parsed.title, parsed.year ?? null, mediaType, (mediaTitle, tmdbId) => {
+    // Trust cache when stored media title matches parsed title (including variants, movie suffix, subtitles, or alternative titles)
+    const alts = tmdbId ? getCachedAlternativeTitles(tmdbId, mediaType) : undefined;
+    return isTitleMatch(parsed.title, mediaTitle ?? "", alts);
+  });
+  return cached?.tmdbId ?? null;
+}
 
-  const fetchMovie = async (searchYear?: string) => {
-    let url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(title)}`;
-    if (searchYear) url += `&primary_release_year=${searchYear}`;
-    const res = await fetch(url, { signal });
-    const data = await res.json();
-    return data.results?.[0] || null;
-  };
+async function resolveMedia(
+  parsed: ParsedMedia,
+  options: BuildOptions
+): Promise<
+  | { kind: "matched"; tmdbId: number; mediaType: "movie" | "tv"; fromCache: true }
+  | { kind: "matched"; tmdbId: number; mediaType: "movie" | "tv"; fromCache: false; match: { title: string; year: string; posterPath: string | null; backdropPath: string | null; overview: string | null } }
+  | { kind: "unresolved"; mediaType: "movie" | "tv" | "other" }
+> {
+  // Sanity gate (Phase 2.4): junk filenames with no year and no SxxEyy marker never
+  // reach TMDB — they'd waste quota and create garbage media rows.
+  if (parsed.mediaType === "other") {
+    return { kind: "unresolved", mediaType: "other" };
+  }
 
-  try {
-    let result = await fetchMovie(year);
-    if (result) return result;
+  const mediaType: "movie" | "tv" = parsed.mediaType === "tv" ? "tv" : "movie";
 
-    // Retry with -1 and +1 year concurrently if exact year failed
-    if (year) {
-      const yearNum = parseInt(year, 10);
-      if (!isNaN(yearNum)) {
-        const [prev, next] = await Promise.all([
-          fetchMovie(String(yearNum - 1)),
-          fetchMovie(String(yearNum + 1))
-        ]);
-        if (prev) return prev;
-        if (next) return next;
-      }
+  // Cache reuse (Phase 3.4): keep resyncs fast and stop results flapping between syncs.
+  // The media row for this id already exists — skip the metadata write entirely so we
+  // never overwrite the real TMDB title/poster with parsed placeholders.
+  const cachedId = lookupCachedResolution(parsed, mediaType);
+  if (cachedId) {
+    return { kind: "matched", tmdbId: cachedId, mediaType, fromCache: true } as const;
+  }
+
+  let outcome: TmdbSearchOutcome;
+  if (mediaType === "tv") {
+    outcome = await searchTmdbTv(parsed.title, parsed.year, parsed.region, options.signal);
+  } else {
+    outcome = await searchTmdbMovie(parsed.title, parsed.year, parsed.region, options.signal);
+  }
+
+  if (outcome.status === "match") {
+    const r = outcome.result;
+    return {
+      kind: "matched",
+      tmdbId: r.id,
+      mediaType,
+      match: { title: r.title, year: r.year, posterPath: r.posterPath, backdropPath: r.backdropPath, overview: r.overview },
+      fromCache: false,
+    };
+  }
+
+  if (outcome.status === "error") {
+    // API failure (rate limit, network, bad key). Do NOT demote the file to "other" —
+    // keep the parser's classification with tmdb_id NULL so it stays in Movies/TV with
+    // a placeholder instead of disappearing until the next successful resync.
+    options.onTmdbError?.();
+    return { kind: "unresolved", mediaType };
+  }
+
+  // Clean no-match: movie search found nothing → fall back to TV (mirrors old behavior
+  // for e.g. limited-series releases named like movies); tv no-match stays tv/unresolved.
+  if (mediaType === "movie") {
+    const tvOutcome = await searchTmdbTv(parsed.title, parsed.year, parsed.region, options.signal);
+    if (tvOutcome.status === "match") {
+      const r = tvOutcome.result;
+      return {
+        kind: "matched",
+        tmdbId: r.id,
+        mediaType: "tv",
+        fromCache: false,
+        match: { title: r.title, year: r.year, posterPath: r.posterPath, backdropPath: r.backdropPath, overview: r.overview },
+      };
     }
+    if (tvOutcome.status === "error") options.onTmdbError?.();
+    return { kind: "unresolved", mediaType: "movie" };
+  }
 
-    // Final fallback without year restriction
-    if (year) return await fetchMovie();
+  return { kind: "unresolved", mediaType: "tv" };
+}
 
-    return null;
-  } catch (e) {
-    console.error("TMDB movie search error:", e);
-    return null;
+function applyMatchedMetadata(
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  match: { title: string; year: string; posterPath: string | null; backdropPath: string | null; overview: string | null },
+  parsed: ParsedMedia,
+  options: BuildOptions
+) {
+  const posterUrl = match.posterPath ? `https://image.tmdb.org/t/p/w500${match.posterPath}` : "";
+  const backdropUrl = match.backdropPath ? `https://image.tmdb.org/t/p/w1280${match.backdropPath}` : "";
+
+  upsertMedia(tmdbId, match.title, match.year, posterUrl, mediaType, backdropUrl, match.overview);
+
+  if (mediaType === "tv" && parsed.season !== undefined && parsed.season > 0) {
+    void fetchAndSaveSeasonEpisodes(tmdbId, parsed.season, options);
   }
 }
 
-async function searchTmdbTv(title: string, year?: string, signal?: AbortSignal) {
-  if (!TMDB_API_KEY) return null;
-
-  const fetchTv = async (searchYear?: string) => {
-    let url = `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(title)}`;
-    if (searchYear) url += `&first_air_date_year=${searchYear}`;
-    const res = await fetch(url, { signal });
-    const data = await res.json();
-    return data.results?.[0] || null;
-  };
+async function fetchAndSaveSeasonEpisodes(
+  showTmdbId: number,
+  seasonNumber: number,
+  options: BuildOptions
+) {
+  const fetchedSeasons = options.fetchedSeasons;
+  if (fetchedSeasons?.has(`${showTmdbId}-S${seasonNumber}`)) return;
 
   try {
-    let result = await fetchTv(year);
-    if (result) return result;
-
-    // Retry with -1 and +1 year concurrently if exact year failed
-    if (year) {
-      const yearNum = parseInt(year, 10);
-      if (!isNaN(yearNum)) {
-        const [prev, next] = await Promise.all([
-          fetchTv(String(yearNum - 1)),
-          fetchTv(String(yearNum + 1))
-        ]);
-        if (prev) return prev;
-        if (next) return next;
-      }
+    const episodes = await fetchSeasonEpisodes(showTmdbId, seasonNumber, options.signal);
+    for (const ep of episodes) {
+      upsertTvEpisode(showTmdbId, seasonNumber, ep.episodeNumber, ep.episodeTitle, ep.overview, ep.stillUrl);
     }
-
-    // Final fallback without year restriction
-    if (year) return await fetchTv();
-
-    return null;
+    if (episodes.length > 0) fetchedSeasons?.add(`${showTmdbId}-S${seasonNumber}`);
   } catch (e) {
-    console.error("TMDB TV search error:", e);
-    return null;
-  }
-}
-
-async function fetchAndSaveSeasonEpisodes(showTmdbId: number, seasonNumber: number, signal?: AbortSignal) {
-  if (!TMDB_API_KEY || seasonNumber <= 0) return;
-  const key = `${showTmdbId}-S${seasonNumber}`;
-  if (fetchedSeasonKeys.has(key)) return;
-
-  try {
-    const url = `https://api.themoviedb.org/3/tv/${showTmdbId}/season/${seasonNumber}?api_key=${TMDB_API_KEY}`;
-    const res = await fetch(url, { signal });
-    if (!res.ok) return;
-    const data = await res.json();
-
-    if (data && Array.isArray(data.episodes)) {
-      for (const ep of data.episodes) {
-        const episodeNumber = ep.episode_number;
-        const episodeTitle = ep.name || `Episode ${episodeNumber}`;
-        const overview = ep.overview || null;
-        const stillUrl = ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null;
-
-        upsertTvEpisode(showTmdbId, seasonNumber, episodeNumber, episodeTitle, overview, stillUrl);
-      }
-      fetchedSeasonKeys.add(key);
-    }
-  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
     console.error(`Failed to fetch season ${seasonNumber} for show ${showTmdbId}:`, e);
   }
 }
@@ -147,14 +184,119 @@ export interface SyncResult {
 
 /**
  * Standalone file-processing pipeline.
- * Parses the filename, looks up TMDB metadata, and upserts into
- * remote_list_cache (+ media / tv_episodes when matched).
+ * Parses the filename, looks up TMDB metadata, and returns a record ready to insert.
  *
  * Called by both:
- *  – syncAccount (full resync)
+ *  – syncAccount (full resync — records committed atomically at the end)
  *  – POST /api/torrent/create (inline insert after adding a torrent)
  *
- * Returns true if the file was inserted, false if skipped.
+ * Returns null if the file was skipped.
+ */
+export async function buildFileRecord(
+  accountId: number,
+  torrentId: number,
+  torrentHash: string | null,
+  file: {
+    id: number;
+    name: string;
+    short_name?: string;
+    size: number;
+    mimetype?: string;
+  },
+  options?: BuildOptions
+): Promise<{ torrent: PendingTorrentRecord; file: PendingFileRecord; tmdbErrored: boolean } | null> {
+  const opts: BuildOptions = options ?? {};
+  let tmdbErrored = false;
+
+  const remotePath = file.name; // e.g. "Movie Folder/Movie.mkv"
+  const filename = file.short_name || remotePath.split("/").pop() || remotePath;
+
+  // Filter by minimum file size; files with "sample" in the name use a higher threshold (1 GB)
+  if (!opts.skipSizeFilter) {
+    const lowerFilename = filename.toLowerCase();
+    const isSample = lowerFilename.includes("sample");
+    const minSize = isSample ? MIN_SAMPLE_FILE_SIZE_BYTES : MIN_FILE_SIZE_BYTES;
+    if (file.size < minSize) return null;
+  }
+
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  if (EXCLUDED_EXTENSIONS.has(ext)) {
+    return null;
+  }
+
+  const shortName = file.short_name || null;
+  const mimeType = file.mimetype || "application/octet-stream";
+
+  if (!isVideoFile(filename, file.mimetype)) {
+    // Non-video file — skip entirely, do not add to database
+    return null;
+  }
+
+  // Parse filename using parser
+  const parsed: ParsedMedia = parseMediaFilename(filename);
+
+  const resolved = await resolveMedia(parsed, {
+    ...opts,
+    onTmdbError: () => {
+      tmdbErrored = true;
+      opts.onTmdbError?.();
+    },
+  });
+
+  let mediaType: "movie" | "tv" | "other";
+  let tmdbId: number | null = null;
+  let showTitle: string | null = null;
+
+  if (resolved.kind === "matched") {
+    mediaType = resolved.mediaType;
+    tmdbId = resolved.tmdbId;
+    if (mediaType === "tv") showTitle = parsed.title;
+    if (!resolved.fromCache) {
+      applyMatchedMetadata(resolved.tmdbId, resolved.mediaType, resolved.match, parsed, opts);
+    }
+  } else {
+    mediaType = resolved.mediaType;
+    if (mediaType === "tv") showTitle = parsed.title;
+  }
+
+  const epStart = parsed.episodes && parsed.episodes.length > 0 ? parsed.episodes[0] : null;
+  const epEnd = parsed.episodes && parsed.episodes.length > 1 ? parsed.episodes[parsed.episodes.length - 1] : null;
+
+  return {
+    tmdbErrored,
+    torrent: {
+      torrentId,
+      torrentName: null, // only available at torrent creation, not from TorBox's mylist API
+      torrentHash,
+      primaryMediaType: mediaType,
+      primaryTitle: parsed.title,
+      tmdbId,
+    },
+    file: {
+      torrentId,
+      fileId: file.id,
+      remotePath,
+      filename,
+      shortName,
+      size: file.size,
+      mimeType,
+      torrentHash,
+      tmdbId,
+      rawTitle: parsed.title,
+      rawYear: parsed.year || null,
+      mediaType,
+      showTitle,
+      seasonNumber: parsed.season ?? null,
+      episodeNumber: epStart,
+      episodeEndNumber: epEnd,
+      parsedYear: parsed.year || null,
+    },
+  };
+}
+
+/**
+ * Inline insert path used by POST /api/torrent/create.
+ * Builds the record and upserts immediately (single torrent, no clear phase involved).
  */
 export async function processAndInsertFile(
   accountId: number,
@@ -167,136 +309,45 @@ export async function processAndInsertFile(
     size: number;
     mimetype?: string;
   },
-  options?: { skipSizeFilter?: boolean; signal?: AbortSignal }
+  options?: BuildOptions
 ): Promise<boolean> {
-  const { skipSizeFilter = false } = options || {};
-
-  const remotePath = file.name; // e.g. "Movie Folder/Movie.mkv"
-  const filename = file.short_name || remotePath.split("/").pop() || remotePath;
-
-  // Filter by minimum file size; files with "sample" in the name use a higher threshold (1 GB)
-  if (!skipSizeFilter) {
-    const lowerFilename = filename.toLowerCase();
-    const isSample = lowerFilename.includes("sample");
-    const minSize = isSample ? MIN_SAMPLE_FILE_SIZE_BYTES : MIN_FILE_SIZE_BYTES;
-    if (file.size < minSize) return false;
-  }
-
-  const ext = filename.split(".").pop()?.toLowerCase() || "";
-  if (EXCLUDED_EXTENSIONS.has(ext)) {
-    return false;
-  }
-
-  const shortName = file.short_name || null;
-  const mimeType = file.mimetype || "application/octet-stream";
-
-  if (!isVideoFile(filename, file.mimetype)) {
-    // Non-video file — skip entirely, do not add to database
-    return false;
-  }
-
-  // Parse filename using parser
-  const parsed: ParsedMedia = parseMediaFilename(filename);
-
-  let tmdbId: number | null = null;
-  let mediaType: "movie" | "tv" | "other" = "other";
-
-  if (parsed.mediaType === "tv") {
-    const tvResult = await searchTmdbTv(parsed.title, parsed.year, options?.signal);
-    if (tvResult) {
-      const showTmdbId = tvResult.id as number;
-      tmdbId = showTmdbId;
-      const showTitle = tvResult.name || parsed.title;
-      const posterUrl = tvResult.poster_path ? `https://image.tmdb.org/t/p/w500${tvResult.poster_path}` : "";
-      const backdropUrl = tvResult.backdrop_path ? `https://image.tmdb.org/t/p/w1280${tvResult.backdrop_path}` : "";
-      const firstAir = tvResult.first_air_date ? tvResult.first_air_date.split("-")[0] : parsed.year || "";
-
-      upsertMedia(showTmdbId, showTitle, firstAir, posterUrl, "tv", backdropUrl, tvResult.overview);
-
-      if (parsed.season !== undefined && parsed.season > 0) {
-        await fetchAndSaveSeasonEpisodes(showTmdbId, parsed.season, options?.signal);
-      }
-      mediaType = "tv";
-    } else {
-      // SxxEyy present but not matched on TMDB — still classify as 'tv'
-      mediaType = "tv";
-    }
-  } else {
-    // Try TMDB Movie first
-    const movieResult = await searchTmdbMovie(parsed.title, parsed.year, options?.signal);
-    if (movieResult) {
-      const movieTmdbId = movieResult.id as number;
-      tmdbId = movieTmdbId;
-      const movieTitle = movieResult.title || parsed.title;
-      const posterUrl = movieResult.poster_path ? `https://image.tmdb.org/t/p/w500${movieResult.poster_path}` : "";
-      const backdropUrl = movieResult.backdrop_path ? `https://image.tmdb.org/t/p/w1280${movieResult.backdrop_path}` : "";
-      const releaseYear = movieResult.release_date ? movieResult.release_date.split("-")[0] : parsed.year || "";
-
-      upsertMedia(movieTmdbId, movieTitle, releaseYear, posterUrl, "movie", backdropUrl, movieResult.overview);
-      mediaType = "movie";
-    } else {
-      // Try TMDB TV as fallback
-      const tvResult = await searchTmdbTv(parsed.title, parsed.year, options?.signal);
-      if (tvResult) {
-        const showTmdbId = tvResult.id as number;
-        tmdbId = showTmdbId;
-        const showTitle = tvResult.name || parsed.title;
-        const posterUrl = tvResult.poster_path ? `https://image.tmdb.org/t/p/w500${tvResult.poster_path}` : "";
-        const backdropUrl = tvResult.backdrop_path ? `https://image.tmdb.org/t/p/w1280${tvResult.backdrop_path}` : "";
-        const firstAir = tvResult.first_air_date ? tvResult.first_air_date.split("-")[0] : parsed.year || "";
-
-        upsertMedia(showTmdbId, showTitle, firstAir, posterUrl, "tv", backdropUrl, tvResult.overview);
-
-        if (parsed.season !== undefined && parsed.season > 0) {
-          await fetchAndSaveSeasonEpisodes(showTmdbId, parsed.season, options?.signal);
-        }
-        mediaType = "tv";
-      } else {
-        mediaType = "other";
-      }
-    }
-  }
-
-  const epStart = parsed.episodes && parsed.episodes.length > 0 ? parsed.episodes[0] : null;
-  const epEnd = parsed.episodes && parsed.episodes.length > 1 ? parsed.episodes[parsed.episodes.length - 1] : null;
+  const record = await buildFileRecord(accountId, torrentId, torrentHash, file, options);
+  if (!record) return false;
 
   upsertTorrent(
     accountId,
-    torrentId,
-    null, // torrentName is only available at torrent creation, not from TorBox's mylist API files, though mylist API root gives it, processAndInsertFile is passed file only. We can pass null and it will update.
-    torrentHash,
-    mediaType,
-    mediaType === "tv" ? parsed.title : parsed.title, // or primary title
-    tmdbId
+    record.torrent.torrentId,
+    record.torrent.torrentName,
+    record.torrent.torrentHash,
+    record.torrent.primaryMediaType,
+    record.torrent.primaryTitle,
+    record.torrent.tmdbId
   );
-
   upsertRemoteFile(
     accountId,
-    torrentId,
-    file.id,
-    remotePath,
-    filename,
-    shortName,
-    file.size,
-    mimeType,
-    torrentHash,
-    tmdbId,
-    parsed.title,
-    parsed.year || null,
-    mediaType,
-    mediaType === "tv" ? parsed.title : null,
-    parsed.season ?? null,
-    epStart,
-    epEnd,
-    parsed.year || null
+    record.file.torrentId,
+    record.file.fileId,
+    record.file.remotePath,
+    record.file.filename,
+    record.file.shortName,
+    record.file.size,
+    record.file.mimeType,
+    record.file.torrentHash,
+    record.file.tmdbId,
+    record.file.rawTitle,
+    record.file.rawYear,
+    record.file.mediaType,
+    record.file.showTitle,
+    record.file.seasonNumber,
+    record.file.episodeNumber,
+    record.file.episodeEndNumber,
+    record.file.parsedYear
   );
 
   return true;
 }
 
 export async function syncAccount(accountId: number, signal?: AbortSignal): Promise<SyncResult> {
-  let cleared = false;
-  let synced = false;
   try {
     // 1. Get a valid access token (auto-refreshes if expired)
     let accessToken: string;
@@ -319,14 +370,16 @@ export async function syncAccount(accountId: number, signal?: AbortSignal): Prom
       return { success: false, filesSynced: 0, error: e.message || "Failed to fetch torrent list" };
     }
 
-    // 3. Clear all existing remote_list_cache rows for this account (clean slate)
-    //    NOTE: media & tv_episodes tables are NOT cleared — they are shared metadata caches.
-    clearRemoteFilesForAccount(accountId);
-    cleared = true;
+    // 3. Process each torrent/file through the shared pipeline WITHOUT touching the DB.
+    //    (Old behavior cleared remote_list_cache up front — an abort or error mid-loop
+    //    left a partially empty library. See LIB_FIX_PLAN.md Phase 4.)
+    const fetchedSeasons = new Set<string>();
+    const pendingTorrents = new Map<number, PendingTorrentRecord>();
+    const pendingFiles: PendingFileRecord[] = [];
+    let hadTmdbErrors = false;
 
     let filesSynced = 0;
 
-    // 4. Process each torrent and its files through the shared pipeline
     for (const torrent of torrents) {
       const torrentId = torrent.id;
       const torrentHash = torrent.hash || null;
@@ -334,26 +387,39 @@ export async function syncAccount(accountId: number, signal?: AbortSignal): Prom
       if (!torrent.files || !Array.isArray(torrent.files)) continue;
 
       for (const file of torrent.files) {
-        const inserted = await processAndInsertFile(
+        const record = await buildFileRecord(
           accountId,
           torrentId,
           torrentHash,
           file,
-          { signal }
+          { signal, fetchedSeasons, onTmdbError: () => { hadTmdbErrors = true; } }
         );
-        if (inserted) filesSynced++;
+        if (record) {
+          filesSynced++;
+          pendingTorrents.set(torrentId, record.torrent);
+          pendingFiles.push(record.file);
+        }
       }
     }
 
+    // 4. Atomic swap: old rows deleted and new rows inserted in one transaction.
+    replaceAccountFiles(
+      accountId,
+      [...pendingTorrents.values()],
+      pendingFiles
+    );
+
     updateAccountSyncTime(accountId);
-    synced = true;
+
+    // If TMDB hiccups happened, bump last_updated_at so the UI can suggest a resync
+    // for the files that were stored with tmdb_id NULL.
+    if (hadTmdbErrors) {
+      updateAccountUpdatedTime(accountId);
+    }
+
     return { success: true, filesSynced };
   } catch (error) {
     console.error("Sync error:", error);
     return { success: false, filesSynced: 0, error: "Sync failed" };
-  } finally {
-    if (cleared && !synced) {
-      updateAccountUpdatedTime(accountId);
-    }
   }
 }

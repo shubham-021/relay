@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
 import { buildPlayerURL } from "@/lib/players";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { AccountBadge } from "@/components/account-badge";
 import { useFileStore } from "@/lib/store";
 import { DeleteTorrentDialog } from "@/components/delete-torrent-dialog";
@@ -373,7 +373,7 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
   );
 }
 
-export function OtherFilesView({ files, isLoading, searchQuery, playerProtocol }: OtherFilesViewProps) {
+export const OtherFilesView = memo(function OtherFilesView({ files, isLoading, searchQuery, playerProtocol }: OtherFilesViewProps) {
   const narrow = useNarrow(640);
   const { accounts, activeAccountId } = useFileStore();
   const [generating, setGenerating] = useState(false);
@@ -460,4 +460,4 @@ export function OtherFilesView({ files, isLoading, searchQuery, playerProtocol }
       </div>
     </div>
   );
-}
+});

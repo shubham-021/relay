@@ -18,7 +18,7 @@ export const EXTRA_EPISODE_RE = /E(\d{1,3})/gi;
 export const X_FORMAT_RE = /(?<![A-Za-z0-9])(\d{1,2})x(\d{2,3})(?![A-Za-z0-9])/;
 export const SEASON_ONLY_RE = /(?<![A-Za-z0-9])S(\d{1,2})(?!\d)(?!E)/i;
 export const EPISODE_ONLY_RE = /(?<![A-Za-z0-9])E(\d{1,3})(?![A-Za-z0-9])/i;
-export const YEAR_RE = /\b(19\d{2}|20\d{2})\b/g;
+export const YEAR_RE = /\b(18[8-9]\d|19\d{2}|20[0-2]\d|203[0-5])\b/g;
 
 export interface ParsedMedia {
   mediaType: "movie" | "tv" | "other";
@@ -32,9 +32,13 @@ export interface ParsedMedia {
   originalFilename: string;
 }
 
-/** Bare 4-digit year: "2021" — but not a quality tag like "1080p". */
-const BARE_YEAR_RE = /^(19\d{2}|20\d{2})$/;
+/** Bare 4-digit year: "2021" — but not a quality tag like "1080p", bounded to plausible movie years (1888..2035). */
+const BARE_YEAR_RE = /^(18[8-9]\d|19\d{2}|20[0-2]\d|203[0-5])$/;
 const BRACKET_RE = /[\(\[\{]([^\)\]\}]*)[\)\]\}]/g;
+
+/** Quality/edition markers that signal the start of release metadata (used to cut title when no year is present). */
+const QUALITY_MARKER_RE =
+  /\b(2160p|1080p|1080i|720p|576p|480p|4k|uhd|bluray|blu-ray|bdrip|brrip|web-?dl|webrip|remux|bdremux|dvdrip|dvd|open[\s._-]*matte|criterion|restored)\b/i;
 
 /** Region markers that appear at the end of show titles (kept as hints, not stripped blindly). */
 const REGION_TOKENS = new Set([
@@ -45,6 +49,7 @@ const REGION_TOKENS = new Set([
 const BLACKLIST_PHRASES: RegExp[] = [
   /directors?[\s._-]*cut/gi,
   /dual[\s._-]*audio/gi,
+  /open[\s._-]*matte/gi,
   /extended[\s._-]*cut/gi,
   /remastered[\s._-]*(edition|cut)?/gi,
   /dolby[\s._-]*(vision|atmos)/gi,
@@ -55,6 +60,10 @@ const BLACKLIST_PHRASES: RegExp[] = [
   // Codec spellings with separators: "H.264", "x-265", "h 264" (bare h264/x265 are token-blacklisted)
   /\b[hx][\s._-]*26[45]\b/gi,
   /\bavc\b|\bav1\b|\bhevc\b/gi,
+  // Version numbers like "Ver.1.0.4"
+  /\bver[\s._-]*\d+(\.\d+)*\b/gi,
+  // Language pairs / audio / dub phrases
+  /\b(hindi|english|russian|french|german|italian|spanish|japanese|chinese|korean|danish|swedish|norwegian|dutch|polish|portuguese|arabic)[\s._-]*(dubbed|audio|subs?|subbed|dub)\b/gi,
 ];
 
 /** Single tokens that must never reach a TMDB query. Matched case-insensitively. */
@@ -66,16 +75,29 @@ const BLACKLIST_TOKENS = new Set([
   "dvdrip", "dvd", "hdtv", "pdvd", "remux", "bdremux", "rip",
   // Codec / dynamic range
   "hevc", "h264", "h265", "x264", "x265", "avc", "av1", "10bit", "8bit", "hi10p", "hi10",
-  "dv", "hdr", "hdr10", "hdr10plus", "dolby", "vision", "atmos",
+  "dv", "dovi", "hdr", "hdr10", "hdr10plus", "dolby", "vision", "atmos",
+  // Release editions & mastering meta
+  "criterion", "restored", "remastered", "matte", "openmatte",
   // Audio
   "truehd", "ddp", "dd", "ddplus", "ac3", "eac3", "aac", "flac", "dts", "ma", "lpcm",
   "5.1", "7.1", "2.0", "1.0", "2ch", "6ch", "8ch", "dual", "audio",
   // Release meta
-  "repack", "proper", "extended", "remastered", "uncut", "complete", "final", "internal",
+  "repack", "proper", "extended", "uncut", "complete", "final", "internal",
   "fixed", "hybrid", "upscale", "upscaled", "multi", "subs", "subbed", "dubbed", "dub",
   "fanres", "sample", "proof", "obfuscated", "rarbg", "nogrp", "shento", "framestor",
   "decibel", "spacehd13", "chg", "eliit", "beyondhd", "tbn", "ryuuga", "subsplease",
-  "horriblesubs", "erai", "judas", "ember", "coalgirls", "commie", "cunnysseur", "kuchikirukia",
+  "horriblesubs", "erai", "judas", "ember", "coalgirls", "commie", "cunnysseur", "kuchikirukia", "tekno3d",
+  // Languages & language codes (3-letter and 2-letter codes, non-conflicting full language names)
+  "eng", "fre", "fra", "ger", "deu", "ita", "spa", "esp", "jpn", "jap", "chi", "zho",
+  "kor", "rus", "hin", "dan", "swe", "nor", "dut", "nld", "fin", "pol", "tur", "ara",
+  "tha", "vie", "por", "heb", "cze", "ces", "hun", "ron", "rum", "ukr", "ind", "tam",
+  "tel", "mal", "kan", "ben", "pan", "fas",
+  // NOTE: 2-letter language codes (hi, en, jp, fr, de, uk, el, …) are intentionally
+  // NOT blacklisted here. They overlap with REGION_TOKENS (uk, fr, de, es, …) and
+  // break real titles (El Topo, Da Vinci, etc.). Language codes that appear AFTER the
+  // year are already excluded from titleSource by the year cut, so blacklisting them
+  // here has no benefit and only causes harm.
+  "hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "punjabi", "marathi", "tagalog", "farsi", "persian",
   // Misc noise (note: single letters like 'x' or 'h' must NOT be blacklisted here,
   // as they break titles like 'Malcolm X', 'Fast X', 'X-Men', etc.)
   "hevcv",
@@ -90,6 +112,8 @@ function isBlacklistedToken(token: string): boolean {
   if (/^[2-8]\.\d$/.test(t)) return true;
   // Version tag: v2, v3, v4, etc.
   if (/^v\d+$/i.test(t)) return true;
+  // Dotted version numbers (e.g. 1.0.4)
+  if (/^\d+(\.\d+)+$/.test(t)) return true;
   // Release-group style trailing token (e.g. "-RARBG")
   if (/^[a-z0-9]{2,}$/i.test(t) && /^(yify|esub|hdts|tc|cam|scr)$/.test(t)) return true;
   return false;
@@ -167,7 +191,7 @@ function joinTokens(tokens: string[]): string {
 export function cleanTitle(raw: string): string {
   // Strip common release tags if present before cleaning
   let cleaned = raw
-    .replace(/(1080p|720p|2160p|4k|bluray|bdrip|brrip|web-dl|webrip|hevc|x264|x265|remux|bdremux|h264|h265|hdr|ddp5\.1|aac|hi10p?).*/i, "")
+    .replace(/(1080p|720p|2160p|4k|bluray|bdrip|brrip|web-dl|webrip|hevc|x264|x265|remux|bdremux|h264|h265|hdr|dovi|ddp5\.1|aac|hi10p?|criterion|open[\s._-]*matte|restored).*/i, "")
     .replace(/\bv\d+\b/gi, "")
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
@@ -458,15 +482,24 @@ export function parseMediaFilename(filename: string): ParsedMedia {
     titleCutIndex = bracketYearIndex;
   }
 
+  // If no year was found, check if quality/edition markers exist to cut the title and classify as a movie
+  const qualityMatch = !titleCutIndex ? QUALITY_MARKER_RE.exec(baseNoBrackets) : null;
+  if (!titleCutIndex && qualityMatch && qualityMatch.index > 0) {
+    titleCutIndex = qualityMatch.index;
+  }
+
   const titleSource = titleCutIndex !== undefined ? baseNoBrackets.slice(0, titleCutIndex) : baseNoBrackets;
   const keptTokens = stripBlacklistedTokens(titleSource);
   const { tokens, region } = extractRegion(keptTokens);
   const title = joinTokens(tokens) || cleanTitle(titleSource) || "Unknown Media";
 
+  const hasQuality = Boolean(qualityMatch || (titleCutIndex !== undefined && QUALITY_MARKER_RE.test(baseNoBrackets)));
+  const mediaType = (year || hasQuality) ? "movie" : "other";
+
   return {
-    mediaType: year ? "movie" : "other",
+    mediaType,
     title,
-    year,
+    ...(year ? { year } : {}),
     ...(region ? { region } : {}),
     extension,
     originalFilename: filename,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useDeferredValue, useEffect, useState, useCallback, useRef } from "react";
 import { Film, Tv, FolderOpen, Search, PlusCircle, Loader2, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,26 @@ import { AccountBadge } from "@/components/account-badge";
 import { toast } from "sonner";
 import { useFileStore } from "@/lib/store";
 import { getCachedData, setCachedData, clearLibraryCache } from "@/lib/library-cache";
+
+const SEARCH_DEBOUNCE_MS = 700;
+
+/**
+ * Debounces the search query passed down to the grids so that rapid typing
+ * doesn't repeatedly re-filter (and remount cards) on every keystroke.
+ * Clearing the query is applied immediately.
+ */
+function useDebouncedSearch(query: string, delayMs: number): string {
+  const [debounced, setDebounced] = useState(query);
+
+  useEffect(() => {
+    // Clearing the query resets the debounced value on the next tick so a
+    // subsequent search starts from a clean slate.
+    const timeoutId = setTimeout(() => setDebounced(query), query === "" ? 0 : delayMs);
+    return () => clearTimeout(timeoutId);
+  }, [query, delayMs]);
+
+  return query === "" ? "" : debounced;
+}
 
 interface FileBrowserProps {
   userId: number;
@@ -48,7 +68,17 @@ export function FileBrowser({ userId, playerProtocol, hasAccounts, accounts: acc
 
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const debouncedSearchQuery = useDebouncedSearch(searchQuery, SEARCH_DEBOUNCE_MS);
+  // An empty search should clear results instantly instead of waiting for the debounce.
+  const appliedSearchQuery = searchQuery.trim() === "" ? "" : debouncedSearchQuery;
+  // Let the (potentially large) filtered list render at low priority so it
+  // never blocks typing/backspacing in the search input.
+  const deferredSearchQuery = useDeferredValue(appliedSearchQuery);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
+
+  const handleSelectShow = useCallback((title: string) => {
+    setSelectedShowTitle(title);
+  }, []);
 
   // Save active tab
   useEffect(() => {
@@ -459,21 +489,21 @@ export function FileBrowser({ userId, playerProtocol, hasAccounts, accounts: acc
           <MoviesGrid
             movies={movies}
             isLoading={isLoading}
-            searchQuery={searchQuery}
+            searchQuery={deferredSearchQuery}
             playerProtocol={playerProtocol}
           />
         ) : activeTab === "tv" ? (
           <TvShowsGrid
             shows={tvShows}
             isLoading={isLoading}
-            searchQuery={searchQuery}
-            onSelectShow={(title) => setSelectedShowTitle(title)}
+            searchQuery={deferredSearchQuery}
+            onSelectShow={handleSelectShow}
           />
         ) : (
           <OtherFilesView
             files={otherFiles}
             isLoading={isLoading}
-            searchQuery={searchQuery}
+            searchQuery={deferredSearchQuery}
             playerProtocol={playerProtocol}
           />
         )}

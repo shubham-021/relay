@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { LOCAL_DAEMON_PLAYERS } from "@/lib/constants";
 import { launchPlayback } from "@/lib/client-play";
 import { WatchedProgressBar } from "@/components/watched-progress-bar";
@@ -98,7 +98,7 @@ async function fetchCdnLink(torrentId: number, fileId: number, accountId: number
   }
 }
 
-export function MoviesGrid({ movies, isLoading, searchQuery, playerProtocol }: MoviesGridProps) {
+export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQuery, playerProtocol }: MoviesGridProps) {
   const { viewMode, accounts } = useFileStore();
   const compactActions = useCompactActions();
   const [deletedIds, setDeletedIds] = useState<Set<number>>(new Set());
@@ -585,4 +585,4 @@ export function MoviesGrid({ movies, isLoading, searchQuery, playerProtocol }: M
       />
     </div>
   );
-}
+});

@@ -18,7 +18,7 @@ export const EXTRA_EPISODE_RE = /E(\d{1,3})/gi;
 export const X_FORMAT_RE = /(?<![A-Za-z0-9])(\d{1,2})x(\d{2,3})(?![A-Za-z0-9])/;
 export const SEASON_ONLY_RE = /(?<![A-Za-z0-9])S(\d{1,2})(?!\d)(?!E)/i;
 export const EPISODE_ONLY_RE = /(?<![A-Za-z0-9])E(\d{1,3})(?![A-Za-z0-9])/i;
-export const YEAR_RE = /\b(19\d{2}|20\d{2})\b/g;
+export const YEAR_RE = /\b(18[8-9]\d|19\d{2}|20[0-2]\d|203[0-5])\b/g;
 
 export interface ParsedMedia {
   mediaType: "movie" | "tv" | "other";

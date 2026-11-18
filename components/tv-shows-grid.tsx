@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { Tv, Layers, Film } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,7 +24,7 @@ interface TvShowsGridProps {
   onSelectShow: (showTitle: string) => void;
 }
 
-export function TvShowsGrid({ shows, isLoading, searchQuery, onSelectShow }: TvShowsGridProps) {
+export const TvShowsGrid = memo(function TvShowsGrid({ shows, isLoading, searchQuery, onSelectShow }: TvShowsGridProps) {
   const { viewMode } = useFileStore();
 
   const filtered = shows.filter((s) =>
@@ -144,4 +145,4 @@ export function TvShowsGrid({ shows, isLoading, searchQuery, onSelectShow }: TvS
       ))}
     </div>
   );
-}
+});

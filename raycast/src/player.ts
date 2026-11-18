@@ -11,8 +11,12 @@ import os from "node:os";
 import path from "node:path";
 import { fetchCdnLink, fetchProgress } from "./api";
 import { getAccessToken } from "./oauth";
-import { getPlayerConfig, getServerUrl } from "./preferences";
-import type { PlayableTarget, PlayerConfig } from "./types";
+import {
+  getPlayerConfig,
+  getServerUrl,
+  getSyncplayConfig,
+} from "./preferences";
+import type { PlayableTarget, PlayerConfig, SyncplayConfig } from "./types";
 
 let isRequestInFlight = false;
 
@@ -365,6 +369,112 @@ export async function copyCdnLink(target: PlayableTarget): Promise<void> {
     toast.style = Toast.Style.Failure;
     toast.title = "Failed to fetch CDN link";
     toast.message = err instanceof Error ? err.message : String(err);
+  } finally {
+    isRequestInFlight = false;
+  }
+}
+
+export function resolveSyncplayExecutable(inputPath: string): string {
+  const normalized = normalizePlayerPath(inputPath);
+  if (normalized.endsWith(".app")) {
+    const internalBinary = path.join(normalized, "Contents/MacOS/Syncplay");
+    if (fs.existsSync(internalBinary)) {
+      return internalBinary;
+    }
+  }
+  return normalized;
+}
+
+export async function launchInSyncplay(
+  target: PlayableTarget,
+  overrideConfig?: SyncplayConfig,
+): Promise<"launched" | "needs_config" | "busy" | "error"> {
+  if (isRequestInFlight) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "CDN request already in progress",
+    });
+    return "busy";
+  }
+
+  const syncConfig = overrideConfig ?? (await getSyncplayConfig());
+  if (!syncConfig.server || !syncConfig.username || !syncConfig.room) {
+    return "needs_config";
+  }
+
+  const playerConfig = await getPlayerConfig();
+  const playerBinary = (
+    syncConfig.playerPath || playerConfig.playerPath
+  ).trim();
+  if (!playerBinary) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Player not configured",
+      message:
+        "Please configure a player binary (e.g. mpv) for Syncplay to control.",
+    });
+    return "needs_config";
+  }
+
+  const syncplayExec = resolveSyncplayExecutable(syncConfig.syncplayPath);
+  const syncplayValidation = validatePlayerPath(syncplayExec);
+  if (!syncplayValidation.valid && syncplayExec !== "syncplay") {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Invalid Syncplay path",
+      message: syncplayValidation.error,
+    });
+    return "needs_config";
+  }
+
+  const playerValidation = validatePlayerPath(playerBinary);
+  if (!playerValidation.valid) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Invalid player path for Syncplay",
+      message: playerValidation.error,
+    });
+    return "needs_config";
+  }
+
+  isRequestInFlight = true;
+  const toast = await showToast({
+    style: Toast.Style.Animated,
+    title: "Fetching CDN link for Syncplay...",
+    message: target.title,
+  });
+
+  try {
+    const { url } = await fetchCdnLink(target);
+
+    // Build Syncplay arguments
+    const syncArgs: string[] = [
+      "--host",
+      syncConfig.server,
+      "--room",
+      syncConfig.room,
+      "--name",
+      syncConfig.username,
+      "--player-path",
+      playerValidation.resolved,
+    ];
+    if (syncConfig.password) {
+      syncArgs.push("--password", syncConfig.password);
+    }
+    syncArgs.push(url);
+
+    const execToRun = syncplayValidation.valid
+      ? syncplayValidation.resolved
+      : syncplayExec;
+    await spawnDetached(execToRun, syncArgs);
+    await toast.hide();
+    await showHUD(`Playing in Syncplay (Room: ${syncConfig.room})`);
+    return "launched";
+  } catch (err) {
+    toast.style = Toast.Style.Failure;
+    toast.title = "Syncplay launch failed";
+    toast.message = err instanceof Error ? err.message : String(err);
+    return "error";
   } finally {
     isRequestInFlight = false;
   }

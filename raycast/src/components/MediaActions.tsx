@@ -9,9 +9,14 @@ import {
 } from "@raycast/api";
 import { clearLibraryCache, markAsWatched, syncAllAccounts } from "../api";
 import { clearAuthTokens } from "../oauth";
-import { copyCdnLink, launchInConfiguredPlayer } from "../player";
+import {
+  copyCdnLink,
+  launchInConfiguredPlayer,
+  launchInSyncplay,
+} from "../player";
 import type { PlayableTarget } from "../types";
 import { ConfigurePlayerForm } from "./ConfigurePlayerForm";
+import { ConfigureSyncplayForm } from "./ConfigureSyncplayForm";
 
 interface ManagementActionsProps {
   onRefresh?: () => void | Promise<void>;
@@ -73,6 +78,12 @@ export function RelayManagementActions({
         onAction={() => push(<ConfigurePlayerForm />)}
       />
       <Action
+        title="Configure Syncplay"
+        icon={Icon.TwoPeople}
+        shortcut={{ modifiers: ["cmd", "opt"], key: "y" }}
+        onAction={() => push(<ConfigureSyncplayForm />)}
+      />
+      <Action
         // eslint-disable-next-line @raycast/prefer-title-case
         title="Sync TorBox Library"
         icon={Icon.Cloud}
@@ -123,6 +134,19 @@ export function PlayableActionPanel({
     }
   }
 
+  async function handleSyncplay() {
+    const result = await launchInSyncplay(target);
+    if (result === "needs_config") {
+      push(
+        <ConfigureSyncplayForm
+          onConfigured={async (config) => {
+            await launchInSyncplay(target, config);
+          }}
+        />,
+      );
+    }
+  }
+
   async function handleMarkWatched() {
     const toast = await showToast({
       style: Toast.Style.Animated,
@@ -150,6 +174,12 @@ export function PlayableActionPanel({
           title="Play in Configured Player"
           icon={Icon.Play}
           onAction={handlePlay}
+        />
+        <Action
+          title="Play with Syncplay"
+          icon={Icon.TwoPeople}
+          shortcut={{ modifiers: ["cmd", "shift"], key: "y" }}
+          onAction={handleSyncplay}
         />
         <Action
           // eslint-disable-next-line @raycast/prefer-title-case

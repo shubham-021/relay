@@ -24,6 +24,12 @@
       "title": "Configure Relay Player",
       "description": "Configure your local video player binary path and playback settings",
       "mode": "view"
+    },
+    {
+      "name": "configure-syncplay",
+      "title": "Configure Syncplay",
+      "description": "Configure Syncplay server, room, username, and player settings",
+      "mode": "view"
     }
   ],
   "preferences": [
@@ -74,7 +80,7 @@
     "typescript": "^5.7.0"
   },
   "scripts": {
-    "build": "ray build -e dist -o dist",
+    "build": "ray build -e dist -o dist && cp -R dist/* ~/.config/raycast/extensions/relay/ 2>/dev/null || true",
     "dev": "ray develop",
     "lint": "ray lint",
     "typecheck": "tsc --noEmit"

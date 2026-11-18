@@ -11,6 +11,15 @@ export interface PlayerConfig {
   resumePlayback: boolean;
 }
 
+export interface SyncplayConfig {
+  syncplayPath: string;
+  server: string;
+  username: string;
+  room: string;
+  password?: string;
+  playerPath?: string;
+}
+
 export interface PlayableTarget {
   account_id: number;
   torrent_id: number;

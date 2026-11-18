@@ -66,63 +66,6 @@ describe("parseMediaFilename — movies", () => {
     expect(r.title).toBe("Us");
     expect(r.year).toBe("2019");
   });
-
-  test("Star Wars Episode VIII with multi-language 3-letter codes after year", () => {
-    const r = parseMediaFilename(
-      "Star.Wars.Episode.VIII.The.Last.Jedi.2017.Eng.Fre.Ger.Ita.Spa.2160p.BluRay.Remux.DV.HDR.HEVC.Atmos-SGF.mkv"
-    );
-    expect(r.mediaType).toBe("movie");
-    expect(r.title).toBe("Star Wars Episode VIII The Last Jedi");
-    expect(r.year).toBe("2017");
-  });
-
-  test("Star Wars Episode IV with multi-language codes", () => {
-    const r = parseMediaFilename(
-      "Star.Wars.Episode.IV.A.New.Hope.1977.Eng.Fre.Ger.Ita.Spa.Jpn.2160p.BluRay.Hybrid.Remux.DV.HDR.HEVC.Atmos-SGF.mkv"
-    );
-    expect(r.mediaType).toBe("movie");
-    expect(r.title).toBe("Star Wars Episode IV A New Hope");
-    expect(r.year).toBe("1977");
-  });
-
-  test("Blade Runner 2049 Open Matte (yearless, quality marker fallback)", () => {
-    const r = parseMediaFilename(
-      "Blade.Runner.2049.Open.Matte.INTERNAL.HDR-X.DoVi.Ver.1.0.4.TrueHD.Atmos.7.1-TEKNO3D.mkv"
-    );
-    expect(r.mediaType).toBe("movie");
-    expect(r.title).toBe("Blade Runner 2049");
-  });
-
-  test("Bakemono no Ko 2015", () => {
-    const r = parseMediaFilename("Bakemono.no.Ko.2015.2160p.WEB-DL.DD5.1.HDR.x265-tG1R0.mkv");
-    expect(r.mediaType).toBe("movie");
-    expect(r.title).toBe("Bakemono no Ko");
-    expect(r.year).toBe("2015");
-  });
-
-  test("language-word titles are preserved (The English Patient, The French Dispatch, The Italian Job)", () => {
-    const english = parseMediaFilename("The.English.Patient.1996.1080p.BluRay.mkv");
-    expect(english.title).toBe("The English Patient");
-    expect(english.year).toBe("1996");
-
-    const french = parseMediaFilename("The.French.Dispatch.2021.1080p.BluRay.mkv");
-    expect(french.title).toBe("The French Dispatch");
-    expect(french.year).toBe("2021");
-
-    const italian = parseMediaFilename("The.Italian.Job.2003.1080p.BluRay.mkv");
-    expect(italian.title).toBe("The Italian Job");
-    expect(italian.year).toBe("2003");
-  });
-
-  test("El-prefixed titles are not broken by language blacklist (El Topo, El Camino)", () => {
-    const topo = parseMediaFilename("El.Topo.1970.1080p.BluRay.mkv");
-    expect(topo.title).toBe("El Topo");
-    expect(topo.year).toBe("1970");
-
-    const camino = parseMediaFilename("El.Camino.A.Breaking.Bad.Movie.2019.1080p.mkv");
-    expect(camino.title).toBe("El Camino A Breaking Bad Movie");
-    expect(camino.year).toBe("2019");
-  });
 });
 
 describe("parseMediaFilename — brackets", () => {

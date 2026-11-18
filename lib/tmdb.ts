@@ -220,6 +220,33 @@ export function getTitleVariants(title: string): string[] {
     if (noEnclosedNoMovie && noEnclosedNoMovie !== noEnclosed) variants.add(noEnclosedNoMovie);
   }
 
+  // Roman numerals in Episode/Part/Chapter: "Episode VIII" <-> "Episode 8"
+  const romanMap: Record<string, string> = {
+    viii: "8", vii: "7", vi: "6", iv: "4", ix: "9",
+    iii: "3", ii: "2", v: "5", i: "1", x: "10"
+  };
+  const arabicMap: Record<string, string> = {
+    "1": "I", "2": "II", "3": "III", "4": "IV", "5": "V",
+    "6": "VI", "7": "VII", "8": "VIII", "9": "IX", "10": "X"
+  };
+  const withArabic = title.replace(/\b(episode|part|vol|chapter)[\s._-]+(viii|vii|vi|iv|ix|iii|ii|v|i|x)\b/gi, (m, prefix, rom) => {
+    const arab = romanMap[rom.toLowerCase()];
+    return arab ? `${prefix} ${arab}` : m;
+  });
+  if (withArabic !== title) variants.add(withArabic);
+
+  const withRoman = title.replace(/\b(episode|part|vol|chapter)[\s._-]+([1-9]|10)\b/gi, (m, prefix, arab) => {
+    const rom = arabicMap[arab];
+    return rom ? `${prefix} ${rom}` : m;
+  });
+  if (withRoman !== title) variants.add(withRoman);
+
+  // Strip Episode/Part/Chapter marker: "Star Wars Episode VIII The Last Jedi" -> "Star Wars The Last Jedi"
+  const noEp = title.replace(/\b(episode|part|vol|chapter)[\s._-]+(\d+|viii|vii|vi|iv|ix|iii|ii|v|i|x)\b/gi, "").replace(/\s+/g, " ").trim();
+  if (noEp && noEp !== title && noEp.length > 2) {
+    variants.add(noEp);
+  }
+
   return [...variants];
 }
 
@@ -585,6 +612,20 @@ async function searchTmdb(
       if (fetchedAny) {
         best = pickBestCandidate(candidates, opts);
         if (best) return { status: "match", result: best };
+      }
+
+      // Search-engine trust: TMDB's search matches against internal transliterations,
+      // romaji, and aliases that are NOT exposed via the alternative_titles API
+      // (e.g. "Apur Sansar" → "The World of Apu", "Mononoke Hime" → "Princess Mononoke").
+      // When every candidate was rejected by our strict matching but the search engine
+      // returned few results with an exact year match, trust TMDB's relevance ranking.
+      if (year) {
+        const yearMatched = candidatesToCheck.filter((c) => c.year === year);
+        if (yearMatched.length > 0 && yearMatched.length <= 3) {
+          // Pick the most popular exact-year match
+          yearMatched.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0));
+          return { status: "match", result: yearMatched[0] };
+        }
       }
     }
 

@@ -9,6 +9,9 @@ import {
   CheckCircle2,
   Plus,
   Filter,
+  ListOrdered,
+  AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +21,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { AccountSelectDialog } from "@/components/account-select-dialog";
+import { QueueHub } from "@/components/queue-hub";
 import { useFileStore } from "@/lib/store";
+import { useAddQueueStore } from "@/lib/queue-store";
 import { parseInput } from "@/tor_sources/magnet";
 import { formatBytes } from "@/lib/utils";
 import { toast } from "sonner";
@@ -76,6 +81,7 @@ interface SearchViewProps {
 
 export function SearchView({ accounts, hasAccounts, availableSources = [] }: SearchViewProps) {
   const { activeAccountId } = useFileStore();
+  const { getHashStatus, getAccountStatuses } = useAddQueueStore();
 
   // Search state
   const [query, setQuery] = useState("");
@@ -149,9 +155,6 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
   const [cacheStatuses, setCacheStatuses] = useState<Map<string, CacheStatus>>(new Map());
   const [cacheResults, setCacheResults] = useState<Map<string, CachedTorrentResult>>(new Map());
 
-  // Add state
-  const [addedHashes, setAddedHashes] = useState<Set<string>>(new Set());
-
   // Account dialog state
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const [pendingMagnet, setPendingMagnet] = useState<{
@@ -174,7 +177,6 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
     setSearchStatus("searching");
     setCacheStatuses(new Map());
     setCacheResults(new Map());
-    setAddedHashes(new Set());
     setResults([]);
     setSearchErrors([]);
     setCompletedSources(0);
@@ -262,7 +264,6 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
     const { infoHash, magnet } = parsed;
     setCacheStatuses(new Map([[infoHash, "checking"]]));
     setCacheResults(new Map());
-    setAddedHashes(new Set());
     setResults([{
       infoHash,
       name: parsed.name,
@@ -329,46 +330,34 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
   const handleAccountConfirm = async (selectedAccountIds: number[]) => {
     if (!pendingMagnet || selectedAccountIds.length === 0) return;
 
-    try {
-      let totalInserted = 0;
-      for (const accountId of selectedAccountIds) {
-        const res = await fetch("/api/torrent/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            magnet: pendingMagnet.magnet,
-            account_id: accountId,
-            cached_files: pendingMagnet.cachedFiles,
-            torrent_hash: pendingMagnet.hash,
-          }),
-        });
+    const result = results.find((r) => r.infoHash === pendingMagnet.hash);
+    const torrentName = result?.name || pendingMagnet.hash;
 
-        if (res.status === 401) { window.location.href = "/login"; return; }
-        const data = await res.json();
-        if (res.status === 409) {
-          toast.error(data.error || "A torrent is already being added");
-          return;
-        }
-        if (!res.ok || !data.success) {
-          throw new Error(data.error || `Failed to add to account ${accountId}`);
-        }
-        totalInserted += data.files_inserted || 0;
-      }
-
-      setAddedHashes((prev) => new Set(prev).add(pendingMagnet.hash));
-      setAccountDialogOpen(false);
-      setPendingMagnet(null);
-
-      if (totalInserted > 0) {
-        toast.success(`Torrent added! ${totalInserted} file${totalInserted > 1 ? "s" : ""} indexed.`);
-      } else {
-        toast.success("Torrent added to selected accounts!");
-      }
-
-      window.dispatchEvent(new CustomEvent("torrent-files-updated"));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to add torrent");
+    // Build account email map for display in the queue hub
+    const accountEmails: Record<number, string> = {};
+    for (const id of selectedAccountIds) {
+      const acc = accounts.find((a: any) => a.id === id);
+      if (acc) accountEmails[id] = acc.torbox_email;
     }
+
+    const enqueued = useAddQueueStore.getState().enqueue({
+      torrentName,
+      torrentHash: pendingMagnet.hash,
+      sizeBytes: result?.sizeBytes || 0,
+      magnet: pendingMagnet.magnet,
+      cachedFiles: pendingMagnet.cachedFiles,
+      accountIds: selectedAccountIds,
+      accountEmails,
+    });
+
+    if (!enqueued) {
+      toast.error("Queue is full (max 10 items). Wait for items to complete.");
+      return;
+    }
+
+    setAccountDialogOpen(false);
+    setPendingMagnet(null);
+    toast.success(`"${torrentName.slice(0, 40)}${torrentName.length > 40 ? "..." : ""}" added to queue`);
   };
 
   return (
@@ -537,16 +526,82 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
                           <XCircle size={14} /> Not cached
                         </span>
                       )}
-                      {status === "cached" && !addedHashes.has(result.infoHash) && (
-                        <Button size="sm" onClick={() => handleAddClick(result)} className="gap-1">
-                          <Plus size={13} /> Add
-                        </Button>
-                      )}
-                      {addedHashes.has(result.infoHash) && (
-                        <span className="flex items-center gap-1 text-xs text-emerald-500">
-                          <CheckCircle2 size={14} /> Added
-                        </span>
-                      )}
+                      {status === "cached" && (() => {
+                        const hashStatus = getHashStatus(result.infoHash);
+                        if (hashStatus === "queued") {
+                          return (
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-primary bg-primary/10 px-2.5 py-1 rounded-full border border-primary/20">
+                              <ListOrdered size={13} /> Queued
+                            </span>
+                          );
+                        }
+                        if (hashStatus === "in-progress") {
+                          return (
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-primary bg-primary/10 px-2.5 py-1 rounded-full border border-primary/20">
+                              <Loader2 size={13} className="animate-spin" /> Adding...
+                            </span>
+                          );
+                        }
+                        if (hashStatus === "completed") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
+                                <CheckCircle2 size={13} /> Added
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddClick(result)}
+                                className="h-7 px-2.5 text-xs gap-1 hover:bg-muted/40"
+                                title="Add to another account"
+                              >
+                                <Plus size={12} /> Add
+                              </Button>
+                            </div>
+                          );
+                        }
+                        if (hashStatus === "partial") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                                <AlertTriangle size={13} /> Partial
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddClick(result)}
+                                className="h-7 px-2.5 text-xs gap-1 hover:bg-muted/40"
+                                title="Add to another account"
+                              >
+                                <Plus size={12} /> Add
+                              </Button>
+                            </div>
+                          );
+                        }
+                        if (hashStatus === "failed") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">
+                                <XCircle size={13} /> Failed
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddClick(result)}
+                                className="h-7 px-2.5 text-xs gap-1 border-red-500/30 text-red-400 hover:bg-red-500/10"
+                                title="Retry or add to another account"
+                              >
+                                <RotateCcw size={12} /> Retry / Add
+                              </Button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <Button size="sm" onClick={() => handleAddClick(result)} className="gap-1">
+                            <Plus size={13} /> Add
+                          </Button>
+                        );
+                      })()}
                     </div>
                   </div>
                 );
@@ -615,8 +670,77 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
                           <XCircle size={14} /> Not cached
                         </span>
                       )}
-                      {status === "cached" &&
-                        !addedHashes.has(result.infoHash) && (
+                      {status === "cached" && (() => {
+                        const hashStatus = getHashStatus(result.infoHash);
+                        if (hashStatus === "queued") {
+                          return (
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-primary bg-primary/10 px-2.5 py-1 rounded-full border border-primary/20">
+                              <ListOrdered size={13} /> Queued
+                            </span>
+                          );
+                        }
+                        if (hashStatus === "in-progress") {
+                          return (
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-primary bg-primary/10 px-2.5 py-1 rounded-full border border-primary/20">
+                              <Loader2 size={13} className="animate-spin" /> Adding...
+                            </span>
+                          );
+                        }
+                        if (hashStatus === "completed") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
+                                <CheckCircle2 size={13} /> Added
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddClick(result)}
+                                className="h-7 px-2.5 text-xs gap-1 hover:bg-muted/40"
+                                title="Add to another account"
+                              >
+                                <Plus size={12} /> Add
+                              </Button>
+                            </div>
+                          );
+                        }
+                        if (hashStatus === "partial") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                                <AlertTriangle size={13} /> Partial
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddClick(result)}
+                                className="h-7 px-2.5 text-xs gap-1 hover:bg-muted/40"
+                                title="Add to another account"
+                              >
+                                <Plus size={12} /> Add
+                              </Button>
+                            </div>
+                          );
+                        }
+                        if (hashStatus === "failed") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">
+                                <XCircle size={13} /> Failed
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleAddClick(result)}
+                                className="h-7 px-2.5 text-xs gap-1 border-red-500/30 text-red-400 hover:bg-red-500/10"
+                                title="Retry or add to another account"
+                              >
+                                <RotateCcw size={12} /> Retry / Add
+                              </Button>
+                            </div>
+                          );
+                        }
+                        return (
                           <Button
                             size="sm"
                             onClick={() => handleAddClick(result)}
@@ -624,12 +748,8 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
                           >
                             <Plus size={13} /> Add
                           </Button>
-                        )}
-                      {addedHashes.has(result.infoHash) && (
-                        <span className="flex items-center gap-1 text-xs text-emerald-500">
-                          <CheckCircle2 size={14} /> Added
-                        </span>
-                      )}
+                        );
+                      })()}
                     </div>
                   </div>
                 );
@@ -663,9 +783,13 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
                 pendingMagnet.hash
               : ""
           }
+          accountStatuses={pendingMagnet ? getAccountStatuses(pendingMagnet.hash) : {}}
           onConfirm={handleAccountConfirm}
         />
       )}
+
+      {/* Queue Hub — floating bottom-right dock */}
+      <QueueHub accounts={accounts} />
     </div>
   );
 }

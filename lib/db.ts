@@ -1054,6 +1054,54 @@ export function getTorrentInfo(accountId: number, torrentId: number) {
 }
 
 /**
+ * Update metadata (TMDB ID, media type, title) for a specific file or all files in a torrent.
+ * Used by the manual Edit Metadata feature.
+ */
+export function updateFileMetadata(
+  accountId: number,
+  torrentId: number,
+  fileId: number | null,
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  title: string,
+  updateAllInTorrent: boolean = false
+) {
+  if (!db) return;
+  try {
+    const tx = db.transaction(() => {
+      // 1. Update remote_list_cache
+      if (updateAllInTorrent || fileId === null) {
+        db.query(
+          `UPDATE remote_list_cache
+           SET tmdb_id = ?, media_type = ?, show_title = ?
+           WHERE account_id = ? AND torrent_id = ?`
+        ).run(tmdbId, mediaType, mediaType === "tv" ? title : null, accountId, torrentId);
+      } else {
+        db.query(
+          `UPDATE remote_list_cache
+           SET tmdb_id = ?, media_type = ?, show_title = ?
+           WHERE account_id = ? AND torrent_id = ? AND file_id = ?`
+        ).run(tmdbId, mediaType, mediaType === "tv" ? title : null, accountId, torrentId, fileId);
+      }
+
+      // 2. Update torrents record
+      db.query(
+        `UPDATE torrents
+         SET primary_media_type = ?, primary_title = ?, tmdb_id = ?
+         WHERE account_id = ? AND torrent_id = ?`
+      ).run(mediaType, title, tmdbId, accountId, torrentId);
+
+      // 3. Update account timestamp to invalidate client ETags / cache
+      db.query(`UPDATE accounts SET last_updated_at = ${UTC_NOW_SQL} WHERE id = ?`).run(accountId);
+    });
+    tx();
+  } catch (e) {
+    console.error("updateFileMetadata error:", e);
+    throw e;
+  }
+}
+
+/**
  * Get all distinct torrent IDs for a TV show (by show title match).
  * Used for batch deletion of an entire show's torrents.
  */

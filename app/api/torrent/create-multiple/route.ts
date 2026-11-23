@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { magnet, account_ids, add_only_if_cached, cached_files, torrent_hash } = body;
+    const { magnet, account_ids, add_only_if_cached, cached_files, torrent_hash, metadata_hints } = body;
 
     if (!magnet || typeof magnet !== "string") {
       return NextResponse.json({ error: "Missing 'magnet' link" }, { status: 400 });
@@ -102,7 +102,7 @@ export async function POST(request: Request) {
                     size: file.size || 0,
                     mimetype: file.mimetype || undefined,
                   },
-                  { signal: controller.signal },
+                  { signal: controller.signal, metadataHints: metadata_hints },
                 );
                 if (inserted) filesInserted++;
               } catch (e) {

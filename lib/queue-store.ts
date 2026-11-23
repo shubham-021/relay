@@ -35,6 +35,11 @@ export interface QueueItem {
   error?: string;
   results?: AccountResult[];
   totalInserted?: number;
+  metadataHints?: {
+    name?: string;
+    year?: string;
+    category?: "movie" | "tv";
+  };
   createdAt: number;
   completedAt?: number;
 }
@@ -269,6 +274,7 @@ export const useAddQueueStore = create<AddQueueState>()(
               account_ids: nextItem.accountIds,
               cached_files: nextItem.cachedFiles,
               torrent_hash: nextItem.torrentHash,
+              metadata_hints: nextItem.metadataHints,
             }),
           });
 

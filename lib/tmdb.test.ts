@@ -187,6 +187,27 @@ describe("pickBestCandidate", () => {
     expect(best!.id).toBe(315465);
     expect(best!.title).toBe("The Boy and the Beast");
   });
+
+  test("Strategy 2: contains match without year returns null (no blind guessing)", () => {
+    const pool = [mk(999, "Some Long Subtitle Movie", "2020")];
+    // "Subtitle" is contained in "Some Long Subtitle Movie", but query has no year and not exact match
+    const best = pickBestCandidate(pool, {
+      title: "Subtitle",
+      mediaType: "movie",
+    });
+    expect(best).toBeNull();
+  });
+
+  test("contains match WITH unique matching year resolves candidate", () => {
+    const pool = [mk(888, "Batman Begins Special Edition", "2005")];
+    const best = pickBestCandidate(pool, {
+      title: "Batman Begins",
+      year: "2005",
+      mediaType: "movie",
+    });
+    expect(best).not.toBeNull();
+    expect(best!.id).toBe(888);
+  });
 });
 
 describe("isTitleMatch and getTitleVariants", () => {

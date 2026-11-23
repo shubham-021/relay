@@ -327,7 +327,10 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
     setAccountDialogOpen(true);
   };
 
-  const handleAccountConfirm = async (selectedAccountIds: number[]) => {
+  const handleAccountConfirm = async (
+    selectedAccountIds: number[],
+    metadataHints?: { name?: string; year?: string; category?: "movie" | "tv" }
+  ) => {
     if (!pendingMagnet || selectedAccountIds.length === 0) return;
 
     const result = results.find((r) => r.infoHash === pendingMagnet.hash);
@@ -348,6 +351,7 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
       cachedFiles: pendingMagnet.cachedFiles,
       accountIds: selectedAccountIds,
       accountEmails,
+      metadataHints,
     });
 
     if (!enqueued) {

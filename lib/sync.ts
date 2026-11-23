@@ -46,13 +46,20 @@ function isVideoFile(filename: string, mimetype?: string): boolean {
   return VIDEO_EXTENSIONS.has(ext);
 }
 
-interface BuildOptions {
+export interface MetadataHints {
+  name?: string;
+  year?: string;
+  category?: "movie" | "tv";
+}
+
+export interface BuildOptions {
   skipSizeFilter?: boolean;
   signal?: AbortSignal;
   /** Per-call set of already-fetched (show, season) pairs — never module-level, it leaks. */
   fetchedSeasons?: Set<string>;
   /** Set to true by buildFileRecord when TMDB errored (vs a clean no-match). */
   onTmdbError?: () => void;
+  metadataHints?: MetadataHints;
 }
 
 /** Look up a previous resolution for this exact title/year/type before hitting the API. */
@@ -234,6 +241,19 @@ export async function buildFileRecord(
 
   // Parse filename using parser
   const parsed: ParsedMedia = parseMediaFilename(filename);
+
+  // Apply user metadata hints if provided
+  if (opts.metadataHints) {
+    if (opts.metadataHints.name && opts.metadataHints.name.trim()) {
+      parsed.title = opts.metadataHints.name.trim();
+    }
+    if (opts.metadataHints.year && opts.metadataHints.year.trim()) {
+      parsed.year = opts.metadataHints.year.trim();
+    }
+    if (opts.metadataHints.category) {
+      parsed.mediaType = opts.metadataHints.category;
+    }
+  }
 
   const resolved = await resolveMedia(parsed, {
     ...opts,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { ArrowLeft, Play, Download, Copy, Tv, Layers, Film, Loader2, Users, MoreVertical, Trash2, CheckCircle2, Circle } from "lucide-react";
+import { ArrowLeft, Play, Download, Copy, Tv, Layers, Film, Loader2, Users, MoreVertical, Trash2, CheckCircle2, Circle, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import { useFileStore } from "@/lib/store";
 import { AccountBadge } from "@/components/account-badge";
 import { WatchedProgressBar } from "@/components/watched-progress-bar";
 import { DeleteTorrentDialog } from "@/components/delete-torrent-dialog";
+import { EditMetadataDialog } from "@/components/edit-metadata-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -58,20 +59,15 @@ interface TvShowDetailProps {
 const LOCAL_DAEMON_PLAYERS = ["mpv", "vlc", "iina"];
 
 function useCompactActions() {
-  const { sidebarCollapsed } = useFileStore();
   const [compact, setCompact] = useState(false);
   useEffect(() => {
     const check = () => {
-      if (sidebarCollapsed) {
-        setCompact(window.innerWidth < 1210);
-      } else {
-        setCompact(window.innerWidth < 1400);
-      }
+      setCompact(window.innerWidth < 640);
     };
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
-  }, [sidebarCollapsed]);
+  }, []);
   return compact;
 }
 
@@ -109,6 +105,7 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
   const [isDeletingShow, setIsDeletingShow] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedTorrents, setSelectedTorrents] = useState<Set<number>>(new Set());
@@ -409,15 +406,26 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
                   </Button>
                 </div>
               ) : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsDeleteMode(true)}
-                  className="h-7 gap-1.5 text-[11px] font-semibold text-red-400 border-red-500/30 hover:bg-red-500/10 hover:text-red-300 cursor-pointer"
-                >
-                  <Trash2 size={12} />
-                  Select to Delete
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowEditDialog(true)}
+                    className="h-7 gap-1.5 text-[11px] font-semibold text-zinc-300 hover:text-white cursor-pointer"
+                  >
+                    <Pencil size={12} />
+                    Edit Metadata
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsDeleteMode(true)}
+                    className="h-7 gap-1.5 text-[11px] font-semibold text-red-400 border-red-500/30 hover:bg-red-500/10 hover:text-red-300 cursor-pointer"
+                  >
+                    <Trash2 size={12} />
+                    Select to Delete
+                  </Button>
+                </div>
               )}
             </div>
 
@@ -722,6 +730,22 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
         }
         isDeleting={isDeletingShow}
       />
+
+      {showEditDialog && (
+        <EditMetadataDialog
+          open={showEditDialog}
+          onOpenChange={setShowEditDialog}
+          accountId={showAccountId || accounts[0]?.id || 1}
+          torrentId={allTorrentIds[0] || 0}
+          currentTmdbId={showInfo?.tmdbId}
+          currentTitle={showInfo?.showTitle}
+          currentCategory="tv"
+          allFilesInTorrent={true}
+          onSaved={() => {
+            loadShowDetail(true);
+          }}
+        />
+      )}
     </div>
   );
 }

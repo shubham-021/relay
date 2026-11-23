@@ -1,6 +1,6 @@
 "use client";
 
-import { Film, Play, Download, Copy, Users, MoreVertical, Trash2 } from "lucide-react";
+import { Film, Play, Download, Copy, Users, MoreVertical, Trash2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { WatchedProgressBar } from "@/components/watched-progress-bar";
 import { AccountBadge } from "@/components/account-badge";
 import { useFileStore } from "@/lib/store";
 import { DeleteTorrentDialog } from "@/components/delete-torrent-dialog";
+import { EditMetadataDialog } from "@/components/edit-metadata-dialog";
 import {
   Dialog,
   DialogContent,
@@ -26,20 +27,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 function useCompactActions() {
-  const { sidebarCollapsed } = useFileStore();
   const [compact, setCompact] = useState(false);
   useEffect(() => {
     const check = () => {
-      if (sidebarCollapsed) {
-        setCompact(window.innerWidth < 1210);
-      } else {
-        setCompact(window.innerWidth < 1400);
-      }
+      setCompact(window.innerWidth < 640);
     };
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
-  }, [sidebarCollapsed]);
+  }, []);
   return compact;
 }
 
@@ -73,7 +69,7 @@ interface GroupedMovie {
   versions: MovieItem[];
 }
 
-type ActionType = "stream" | "copy" | "download" | "syncplay" | "delete";
+type ActionType = "stream" | "copy" | "download" | "syncplay" | "delete" | "edit";
 
 interface MoviesGridProps {
   movies: MovieItem[];
@@ -104,6 +100,7 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
   const [deletedIds, setDeletedIds] = useState<Set<number>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<MovieItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [editTarget, setEditTarget] = useState<MovieItem | null>(null);
 
   const getAccount = (id: number) => accounts.find(a => a.id === id);
 
@@ -239,6 +236,7 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
       case "download": handleDownload(version); break;
       case "syncplay": handleSyncplay(version); break;
       case "delete": setDeleteTarget(version); break;
+      case "edit": setEditTarget(version); break;
     }
   }, [handleStream, handleCopyLink, handleDownload, handleSyncplay]);
 
@@ -354,6 +352,15 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
               <Button
                 size="icon"
                 variant="outline"
+                onClick={() => setEditTarget(movie)}
+                className="h-8 w-8 shrink-0 text-xs text-zinc-300 hover:text-white cursor-pointer"
+                title="Edit Metadata"
+              >
+                <Pencil size={13} />
+              </Button>
+              <Button
+                size="icon"
+                variant="outline"
                 onClick={() => setDeleteTarget(movie)}
                 className="h-8 w-8 shrink-0 text-xs text-red-400 border-red-500/30 hover:bg-red-500/10 cursor-pointer"
                 title="Delete Torrent"
@@ -440,6 +447,10 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
                           Syncplay
                         </DropdownMenuItem>
                       )}
+                      <DropdownMenuItem onClick={() => onActionClick(movieGroup, "edit")} className="gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer text-sm font-medium hover:bg-blue-500/10 focus:bg-blue-500/10">
+                        <Pencil size={14} className="text-blue-400" />
+                        Edit Metadata
+                      </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => onActionClick(movieGroup, "delete")} className="gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer text-sm font-medium hover:bg-red-500/10 focus:bg-red-500/10">
                         <Trash2 size={14} className="text-red-400" />
                         Delete
@@ -450,25 +461,25 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
               </div>
 
               {/* Hover overlay: metadata + action buttons */}
-              <div className="absolute inset-0 bg-linear-to-t from-black via-black/85 to-black/60 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex flex-col justify-end p-2.5 sm:p-4 gap-2 sm:gap-3">
+              <div className="absolute inset-0 bg-linear-to-t from-black via-black/85 to-black/60 opacity-0 transition-opacity duration-300 group-hover:opacity-100 flex flex-col justify-end p-2.5 sm:p-3 gap-2">
                 {/* Overview + metadata */}
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 flex-1 min-h-0 flex flex-col justify-end">
                   {movieGroup.overview && (
-                    <p className="text-[12px] text-zinc-300 line-clamp-4 font-normal leading-relaxed">
+                    <p className="text-[11px] sm:text-xs text-zinc-300 line-clamp-3 font-normal leading-relaxed">
                       {movieGroup.overview}
                     </p>
                   )}
-                  <div className="flex items-center gap-2 text-[11px] text-zinc-400 font-medium">
+                  <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-zinc-400 font-medium">
                     {movieGroup.year && <span>{movieGroup.year}</span>}
                     {movieGroup.year && <span className="text-zinc-600">•</span>}
-                    <span>
+                    <span className="truncate">
                       {movieGroup.versions.length > 1
                         ? `${movieGroup.versions.length} Versions`
                         : movieGroup.versions[0].sizeFormatted}
                     </span>
 
                     {/* Account badge(s) shown on hover */}
-                    <div className="flex items-center gap-1 ml-auto">
+                    <div className="flex items-center gap-1 ml-auto shrink-0">
                       {movieGroup.versions.length === 1 ? (() => {
                         const acc = getAccount(movieGroup.versions[0].account_id);
                         return acc && <AccountBadge accountId={acc.id} email={acc.torbox_email} variant="inline" />;
@@ -485,47 +496,55 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
                   </div>
                 </div>
 
-                {/* Inline action buttons — only when NOT compact */}
-                {!compactActions && (
-                  <div className="flex items-center gap-2 w-full">
-                    <Button
-                      size="sm"
-                      onClick={() => onActionClick(movieGroup, "stream")}
-                      className="h-10 w-10 shrink-0 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-                    >
-                      <Play size={15} className="fill-current" />
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="secondary"
-                      onClick={() => onActionClick(movieGroup, "copy")}
-                      className="h-10 w-10 shrink-0 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-                      title="Copy CDN Link"
-                    >
-                      <Copy size={15} />
-                    </Button>
-                    {LOCAL_DAEMON_PLAYERS.includes(playerProtocol) && (
-                      <Button
-                        size="icon"
-                        variant="secondary"
-                        onClick={() => onActionClick(movieGroup, "syncplay")}
-                        className="h-10 w-10 shrink-0 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 cursor-pointer"
-                        title="Syncplay with friends"
-                      >
-                        <Users size={15} />
-                      </Button>
-                    )}
+                {/* Action buttons dock: all buttons visible at once without scrolling */}
+                <div className="w-full p-1 sm:p-1.5 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 shadow-lg flex items-center justify-between gap-1 shrink-0">
+                  <Button
+                    size="icon"
+                    onClick={(e) => { e.stopPropagation(); onActionClick(movieGroup, "stream"); }}
+                    className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 flex items-center justify-center shadow-xs cursor-pointer transition-colors"
+                    title="Stream / Play"
+                  >
+                    <Play size={13} className="fill-current shrink-0" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={(e) => { e.stopPropagation(); onActionClick(movieGroup, "copy"); }}
+                    className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-200 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+                    title="Copy CDN Link"
+                  >
+                    <Copy size={13} className="shrink-0" />
+                  </Button>
+                  {LOCAL_DAEMON_PLAYERS.includes(playerProtocol) && (
                     <Button
                       size="icon"
-                      variant="secondary"
-                      onClick={() => onActionClick(movieGroup, "delete")}
-                      className="h-10 w-10 shrink-0 bg-red-500/20 hover:bg-red-500/30 text-red-300 cursor-pointer"
-                      title="Delete Torrent"
+                      variant="ghost"
+                      onClick={(e) => { e.stopPropagation(); onActionClick(movieGroup, "syncplay"); }}
+                      className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 hover:text-amber-300 flex items-center justify-center cursor-pointer transition-colors"
+                      title="Syncplay with friends"
                     >
-                      <Trash2 size={15} />
+                      <Users size={13} className="shrink-0" />
                     </Button>
-                  </div>
-                )}
+                  )}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={(e) => { e.stopPropagation(); onActionClick(movieGroup, "edit"); }}
+                    className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-200 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+                    title="Edit Metadata"
+                  >
+                    <Pencil size={13} className="shrink-0" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={(e) => { e.stopPropagation(); onActionClick(movieGroup, "delete"); }}
+                    className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 hover:text-red-300 flex items-center justify-center cursor-pointer transition-colors"
+                    title="Delete Torrent"
+                  >
+                    <Trash2 size={13} className="shrink-0" />
+                  </Button>
+                </div>
               </div>
 
               {/* Resume progress bar at the bottom of the card */}
@@ -583,6 +602,20 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
         description={`This will permanently delete "${deleteTarget?.title}" from your TorBox account and remove it from your library. This action cannot be undone.`}
         isDeleting={isDeleting}
       />
+
+      {editTarget && (
+        <EditMetadataDialog
+          open={!!editTarget}
+          onOpenChange={(open) => { if (!open) setEditTarget(null); }}
+          accountId={editTarget.account_id}
+          torrentId={editTarget.torrent_id}
+          fileId={editTarget.file_id}
+          currentTmdbId={editTarget.tmdb_id}
+          currentTitle={editTarget.title}
+          currentCategory="movie"
+          allFilesInTorrent={true}
+        />
+      )}
     </div>
   );
 });

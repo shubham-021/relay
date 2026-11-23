@@ -1,6 +1,6 @@
 "use client";
 
-import { FileText, Play, Download, Copy, FolderOpen, Users, MoreVertical, Loader2, ChevronLeft, ChevronRight, Images, FileVideo, Trash2 } from "lucide-react";
+import { FileText, Play, Download, Copy, FolderOpen, Users, MoreVertical, Loader2, ChevronLeft, ChevronRight, Images, FileVideo, Trash2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -10,6 +10,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { AccountBadge } from "@/components/account-badge";
 import { useFileStore } from "@/lib/store";
 import { DeleteTorrentDialog } from "@/components/delete-torrent-dialog";
+import { EditMetadataDialog } from "@/components/edit-metadata-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -69,6 +70,7 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
   const [currentPos, setCurrentPos] = useState(1);
   const [imgFailed, setImgFailed] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isFetchingInfo, setIsFetchingInfo] = useState(false);
   const [torrentInfo, setTorrentInfo] = useState<{ primary_title: string | null, primary_media_type: string, torrent_name: string | null } | null>(null);
@@ -256,6 +258,10 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
                     Syncplay
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem onClick={() => setShowEditDialog(true)} className="gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer text-sm font-medium hover:bg-blue-500/10 focus:bg-blue-500/10">
+                  <Pencil size={14} className="text-blue-400" />
+                  Assign Metadata
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={handleDeleteClick} disabled={isFetchingInfo} className="gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer text-sm font-medium hover:bg-red-500/10 focus:bg-red-500/10">
                   {isFetchingInfo ? <Loader2 size={14} className="text-red-400 animate-spin" /> : <Trash2 size={14} className="text-red-400" />}
                   Delete
@@ -294,67 +300,65 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
           ) : <div />}
         </div>
 
-        {/* Action buttons — visible on hover, no dark overlay */}
-        {!compactActions && (
-          <div className="absolute bottom-0 inset-x-0 p-2.5 sm:p-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10">
-            <Button
-              size="sm"
-              onClick={handleStream}
-              className="h-10 flex-1 sm:flex-none sm:w-10 shrink-0 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-            >
-              <Play size={15} className="fill-current" />
-              <span className="sm:hidden">Play</span>
-            </Button>
-            <Button
-              size="icon"
-              variant="secondary"
-              onClick={handleCopyLink}
-              className="h-10 w-10 shrink-0 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              title="Copy CDN Link"
-            >
-              <Copy size={15} />
-            </Button>
-            {/* <Button
-              size="icon"
-              variant="secondary"
-              onClick={handleDownload}
-              className="h-10 w-10 shrink-0 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              title="Download File"
-            >
-              <Download size={15} />
-            </Button> */}
-            {LOCAL_DAEMON_PLAYERS.includes(playerProtocol) && (
-              <Button
-                size="icon"
-                variant="secondary"
-                onClick={handleSyncplay}
-                className="h-10 w-10 shrink-0 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 cursor-pointer"
-                title="Syncplay with friends"
-              >
-                <Users size={15} />
-              </Button>
-            )}
-            <Button
-              size="icon"
-              variant="secondary"
-              onClick={handleDeleteClick}
-              disabled={isFetchingInfo}
-              className="h-10 w-10 shrink-0 bg-red-500/20 hover:bg-red-500/30 text-red-300 cursor-pointer"
-              title="Delete Torrent"
-            >
-              {isFetchingInfo ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
-            </Button>
-          </div>
-        )}
-        
-        {/* Thumb dots at very bottom overlay */}
+        {/* Thumb dots at top left on hover */}
         {thumbOk && (
-          <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none">
+          <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none">
             {Array.from({ length: 5 }, (_, i) => (
-              <div key={i} className={`w-1.5 h-1.5 rounded-full shadow-sm ${i + 1 === currentPos ? "bg-white" : "bg-white/30"}`} />
+              <div key={i} className={`w-1.5 h-1.5 rounded-full shadow-xs ${i + 1 === currentPos ? "bg-primary" : "bg-white/30"}`} />
             ))}
           </div>
         )}
+
+        {/* Action buttons dock — visible on hover, all buttons visible at once */}
+        <div className="absolute bottom-2.5 inset-x-2.5 p-1 sm:p-1.5 rounded-xl bg-black/75 backdrop-blur-md border border-white/10 shadow-2xl flex items-center justify-between gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-20">
+          <Button
+            size="icon"
+            onClick={(e) => { e.stopPropagation(); handleStream(); }}
+            className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 flex items-center justify-center shadow-xs cursor-pointer transition-colors"
+            title="Stream / Play"
+          >
+            <Play size={13} className="fill-current shrink-0" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={(e) => { e.stopPropagation(); handleCopyLink(); }}
+            className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-200 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+            title="Copy CDN Link"
+          >
+            <Copy size={13} className="shrink-0" />
+          </Button>
+          {LOCAL_DAEMON_PLAYERS.includes(playerProtocol) && (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={(e) => { e.stopPropagation(); handleSyncplay(); }}
+              className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 hover:text-amber-300 flex items-center justify-center cursor-pointer transition-colors"
+              title="Syncplay with friends"
+            >
+              <Users size={13} className="shrink-0" />
+            </Button>
+          )}
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={(e) => { e.stopPropagation(); setShowEditDialog(true); }}
+            className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-200 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+            title="Assign Metadata"
+          >
+            <Pencil size={13} className="shrink-0" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={(e) => { e.stopPropagation(); handleDeleteClick(); }}
+            disabled={isFetchingInfo}
+            className="h-7.5 sm:h-8 flex-1 min-w-0 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 hover:text-red-300 flex items-center justify-center cursor-pointer transition-colors"
+            title="Delete Torrent"
+          >
+            {isFetchingInfo ? <Loader2 size={13} className="animate-spin shrink-0" /> : <Trash2 size={13} className="shrink-0" />}
+          </Button>
+        </div>
       </div>
 
       <DeleteTorrentDialog
@@ -368,6 +372,18 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
             : `This will permanently delete "${file.filename}" from your TorBox account. This action cannot be undone.`
         }
         isDeleting={isDeleting}
+      />
+
+      <EditMetadataDialog
+        open={showEditDialog}
+        onOpenChange={setShowEditDialog}
+        accountId={file.account_id}
+        torrentId={file.torrent_id}
+        fileId={file.file_id}
+        currentTitle={file.filename}
+        currentCategory="movie"
+        allFilesInTorrent={false}
+        onSaved={() => onDeleted(file.id)}
       />
     </Card>
   );

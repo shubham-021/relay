@@ -413,58 +413,114 @@ function scoreCandidate(
   return { score, quality, sim };
 }
 
-/**
- * Pick the best candidate from the pool.
- * Evaluates candidates based on title match quality (full exact, movie format suffix,
- * base title/subtitle variants, or fuzzy), year proximity, region, and popularity.
- */
 export function pickBestCandidate(
   candidates: TmdbMatch[],
   opts: ScoreOptions
 ): TmdbMatch | null {
   if (candidates.length === 0) return null;
 
-  const scored = candidates
-    .map((cand) => ({ cand, ...scoreCandidate(cand, opts) }))
-    .filter((item) => item.score >= ACCEPT_THRESHOLD);
+  const parsedNorm = normalizeTitle(opts.title);
+  if (!parsedNorm) return null;
+  const parsedVariants = getTitleVariants(opts.title).map(normalizeTitle);
 
-  if (scored.length === 0) return null;
+  // Pass 1: Exact Name Match
+  // Check candidate title, originalTitle, alternativeTitles, and stripped variants
+  const exactMatches: TmdbMatch[] = [];
 
-  scored.sort((a, b) => {
-    // 1. If opts.year is specified, exact year matches with valid title matches outrank wrong-year candidates
-    if (opts.year && a.cand.year && b.cand.year) {
-      const aYearExact = a.cand.year === opts.year;
-      const bYearExact = b.cand.year === opts.year;
-      if (aYearExact !== bYearExact) {
-        const aIsTitleMatch = a.quality === "FULL_EXACT" || a.quality === "ALT_EXACT" || a.quality === "MOVIE_SUFFIX" || a.quality === "BASE_EXACT";
-        const bIsTitleMatch = b.quality === "FULL_EXACT" || b.quality === "ALT_EXACT" || b.quality === "MOVIE_SUFFIX" || b.quality === "BASE_EXACT";
-        if (aYearExact && aIsTitleMatch) return -1;
-        if (bYearExact && bIsTitleMatch) return 1;
+  for (const cand of candidates) {
+    const candTitles = [cand.title];
+    if (cand.originalTitle && cand.originalTitle !== cand.title) {
+      candTitles.push(cand.originalTitle);
+    }
+
+    let isExact = false;
+    for (const ct of candTitles) {
+      const ctNorm = normalizeTitle(ct);
+      if (ctNorm === parsedNorm) {
+        isExact = true;
+        break;
+      }
+      // Check title variants (e.g. ": The Movie" or subtitles stripped)
+      const ctVariants = getTitleVariants(ct).map(normalizeTitle);
+      if (ctVariants.some((v) => v === parsedNorm || parsedVariants.includes(v))) {
+        isExact = true;
+        break;
       }
     }
 
-    // 2. Score difference (if significant)
-    if (Math.abs(b.score - a.score) >= 0.03) {
-      return b.score - a.score;
+    // Check alternative titles (e.g. Romaji / alias titles)
+    if (!isExact && cand.alternativeTitles && cand.alternativeTitles.length > 0) {
+      for (const alt of cand.alternativeTitles) {
+        const altNorm = normalizeTitle(alt);
+        if (altNorm === parsedNorm) {
+          isExact = true;
+          break;
+        }
+        const altVariants = getTitleVariants(alt).map(normalizeTitle);
+        if (altVariants.some((v) => v === parsedNorm || parsedVariants.includes(v))) {
+          isExact = true;
+          break;
+        }
+      }
     }
 
-    // 3. Year proximity
-    if (opts.year && a.cand.year && b.cand.year) {
-      const diffA = Math.abs(Number(a.cand.year) - Number(opts.year));
-      const diffB = Math.abs(Number(b.cand.year) - Number(opts.year));
-      if (diffA !== diffB) return diffA - diffB;
+    if (isExact) {
+      exactMatches.push(cand);
     }
+  }
 
-    // 4. Region match bonus
-    const regA = regionMatches(opts.region, a.cand) ? 1 : 0;
-    const regB = regionMatches(opts.region, b.cand) ? 1 : 0;
-    if (regA !== regB) return regB - regA;
+  if (exactMatches.length > 0) {
+    // If year provided, prioritize exact year match among exact title matches
+    if (opts.year) {
+      const yearMatch = exactMatches.find((c) => c.year === opts.year);
+      if (yearMatch) return yearMatch;
+    }
+    // Region match bonus for exact titles (e.g. "The Office" US vs UK)
+    if (opts.region) {
+      const regMatch = exactMatches.find((c) => regionMatches(opts.region, c));
+      if (regMatch) return regMatch;
+    }
+    // Popularity tie-break between exact matches
+    exactMatches.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0));
+    return exactMatches[0];
+  }
 
-    // 5. Popularity tie-break
-    return (b.cand.popularity ?? 0) - (a.cand.popularity ?? 0);
+  // Pass 2: "Contains / Substring" Match
+  // Filter candidates whose title contains the searched name or vice-versa
+  const containsMatches = candidates.filter((cand) => {
+    const candNorm = normalizeTitle(cand.title);
+    const origNorm = cand.originalTitle ? normalizeTitle(cand.originalTitle) : "";
+    return (
+      candNorm.includes(parsedNorm) ||
+      parsedNorm.includes(candNorm) ||
+      (origNorm && (origNorm.includes(parsedNorm) || parsedNorm.includes(origNorm)))
+    );
   });
 
-  return scored[0]?.cand ?? null;
+  if (containsMatches.length > 0) {
+    // If we have the year, keep the candidate matching that year
+    if (opts.year) {
+      const yearMatches = containsMatches.filter((c) => c.year === opts.year);
+      if (yearMatches.length === 1) return yearMatches[0];
+      if (yearMatches.length > 1) {
+        // Ambiguous: multiple different containing titles released in the same year.
+        // Strategy 2: do not guess blindly!
+        return null;
+      }
+
+      // Close year (+/- 1) match if exactly one
+      const closeYearMatches = containsMatches.filter((c) => {
+        if (!c.year) return false;
+        return Math.abs(Number(c.year) - Number(opts.year)) <= 1;
+      });
+      if (closeYearMatches.length === 1) return closeYearMatches[0];
+    }
+    // Strategy 2: If we do NOT have the year (or ambiguous/unmatched), do NOT guess!
+    return null;
+  }
+
+  // Pass 3: No match
+  return null;
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────────
@@ -613,20 +669,6 @@ async function searchTmdb(
         best = pickBestCandidate(candidates, opts);
         if (best) return { status: "match", result: best };
       }
-
-      // Search-engine trust: TMDB's search matches against internal transliterations,
-      // romaji, and aliases that are NOT exposed via the alternative_titles API
-      // (e.g. "Apur Sansar" → "The World of Apu", "Mononoke Hime" → "Princess Mononoke").
-      // When every candidate was rejected by our strict matching but the search engine
-      // returned few results with an exact year match, trust TMDB's relevance ranking.
-      if (year) {
-        const yearMatched = candidatesToCheck.filter((c) => c.year === year);
-        if (yearMatched.length > 0 && yearMatched.length <= 3) {
-          // Pick the most popular exact-year match
-          yearMatched.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0));
-          return { status: "match", result: yearMatched[0] };
-        }
-      }
     }
 
     // Subtitle fallback: if query contains subtitle delimiters (e.g. "Title: Subtitle" or "Title - Subtitle"),
@@ -707,4 +749,75 @@ export async function fetchSeasonEpisodes(
     overview: ep.overview || null,
     stillUrl: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
   }));
+}
+
+/**
+ * Direct search endpoint helper for UI manual metadata lookup.
+ * Returns top results with poster and release year.
+ */
+export async function searchTmdbDirect(
+  query: string,
+  category: "movie" | "tv",
+  signal?: AbortSignal
+): Promise<Array<{
+  id: number;
+  title: string;
+  year: string;
+  posterPath: string | null;
+  backdropPath: string | null;
+  overview: string | null;
+  mediaType: "movie" | "tv";
+}>> {
+  const path = category === "tv" ? "search/tv" : "search/movie";
+  const data = await tmdbGet(path, { query, include_adult: "false" }, signal);
+  if (!data || !Array.isArray(data.results)) return [];
+
+  return data.results.slice(0, 10).map((item: RawSearchItem) => {
+    const match = toMatch(item, category);
+    return {
+      id: item.id,
+      title: match?.title || item.title || item.name || "",
+      year: match?.year || "",
+      posterPath: item.poster_path || null,
+      backdropPath: item.backdrop_path || null,
+      overview: item.overview || null,
+      mediaType: category,
+    };
+  });
+}
+
+/**
+ * Direct TMDB resource fetch by ID and Category (movie or tv).
+ * Returns canonical title, year, poster URL, and overview for database updates.
+ */
+export async function fetchTmdbMediaDetails(
+  tmdbId: number,
+  category: "movie" | "tv",
+  signal?: AbortSignal
+): Promise<{
+  id: number;
+  title: string;
+  year: string;
+  posterPath: string | null;
+  backdropPath: string | null;
+  overview: string | null;
+  mediaType: "movie" | "tv";
+} | null> {
+  const path = category === "tv" ? `tv/${tmdbId}` : `movie/${tmdbId}`;
+  const data = await tmdbGet(path, {}, signal);
+  if (!data || !data.id) return null;
+
+  const title = data.title || data.name || "";
+  const date = data.release_date || data.first_air_date || "";
+  const year = date ? date.slice(0, 4) : "";
+
+  return {
+    id: data.id,
+    title,
+    year,
+    posterPath: data.poster_path || null,
+    backdropPath: data.backdrop_path || null,
+    overview: data.overview || null,
+    mediaType: category,
+  };
 }

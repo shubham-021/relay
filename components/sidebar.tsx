@@ -20,14 +20,14 @@ interface SidebarProps {
 export function Sidebar({ username = "User" }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { viewMode, setViewMode, setSidebarCollapsed } = useFileStore();
+  const { viewMode, setViewMode, sidebarCollapsed, setSidebarCollapsed, hydrateSidebarCollapsed } = useFileStore();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const [isCollapsed, setIsCollapsedLocal] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
   const [fetchedUsername, setFetchedUsername] = useState<string>("User");
 
   useEffect(() => {
     setIsMounted(true);
+    hydrateSidebarCollapsed();
     if (username === "User") {
       fetch("/api/auth/me")
         .then((res) => res.json())
@@ -84,7 +84,7 @@ export function Sidebar({ username = "User" }: SidebarProps) {
   }
 
   const renderContent = (isMobile: boolean) => {
-    const showContent = !isCollapsed || isMobile;
+    const showContent = !sidebarCollapsed || isMobile;
     const collapsedStyle = isMobile;
 
     return (
@@ -96,9 +96,7 @@ export function Sidebar({ username = "User" }: SidebarProps) {
             size="icon"
             className="absolute -right-3 top-6 h-6 w-6 rounded-full shadow-sm bg-background hover:bg-accent z-10 flex items-center justify-center"
             onClick={() => {
-              const next = !isCollapsed;
-              setIsCollapsedLocal(next);
-              setSidebarCollapsed(next);
+              setSidebarCollapsed(!sidebarCollapsed);
             }}
           >
             <TextAlignJustify className="size-4" />
@@ -233,7 +231,7 @@ export function Sidebar({ username = "User" }: SidebarProps) {
       {/* Desktop Sidebar (Animated with Motion) */}
       <motion.aside
         initial={false}
-        animate={{ width: isCollapsed ? 24 : 224 }}
+        animate={{ width: sidebarCollapsed ? 24 : 224 }}
         className="hidden lg:flex h-full flex-col glass-panel shrink-0 relative z-20 border-r border-dashed border-black/25 dark:border-white/25"
         style={{ overflow: "visible" }}
       >

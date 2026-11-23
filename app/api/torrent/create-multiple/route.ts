@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getAccountsByUserId, verifyUserAccountAccess, updateAccountUpdatedTime } from "@/lib/db";
+import { getAccountsByUserId, verifyUserAccountAccess } from "@/lib/db";
 import { getValidAccessToken, createTorrent } from "@/lib/torbox";
-import { processAndInsertFile } from "@/lib/sync";
 import { acquireLock, releaseLock } from "@/lib/in-flight";
+import { parseMediaFilename } from "@/lib/parser";
+import { isVideoFile } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ interface CachedFilePayload {
 interface AccountResult {
   account_id: number;
   success: boolean;
-  files_inserted: number;
+  files_inserted?: number;
   torrent_id?: number;
   error?: string;
 }
@@ -31,7 +32,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { magnet, account_ids, add_only_if_cached, cached_files, torrent_hash, metadata_hints } = body;
+    const { magnet, account_ids, add_only_if_cached, cached_files, torrent_hash } = body;
 
     if (!magnet || typeof magnet !== "string") {
       return NextResponse.json({ error: "Missing 'magnet' link" }, { status: 400 });
@@ -65,7 +66,6 @@ export async function POST(request: Request) {
 
     try {
       const results: AccountResult[] = [];
-      let totalInserted = 0;
 
       for (const accountId of requestedIds) {
         try {
@@ -77,49 +77,9 @@ export async function POST(request: Request) {
             controller.signal
           );
 
-          let filesInserted = 0;
-          if (
-            result.success &&
-            result.data?.torrent_id &&
-            Array.isArray(cached_files) &&
-            cached_files.length > 0
-          ) {
-            const torrentId = result.data.torrent_id;
-            const hash = torrent_hash || result.data.hash || null;
-
-            for (const file of cached_files as CachedFilePayload[]) {
-              if (!file || typeof file.id !== "number" || !file.name) continue;
-
-              try {
-                const inserted = await processAndInsertFile(
-                  accountId,
-                  torrentId,
-                  hash,
-                  {
-                    id: file.id,
-                    name: file.name,
-                    short_name: file.short_name || undefined,
-                    size: file.size || 0,
-                    mimetype: file.mimetype || undefined,
-                  },
-                  { signal: controller.signal, metadataHints: metadata_hints },
-                );
-                if (inserted) filesInserted++;
-              } catch (e) {
-                console.error(`Failed to process cached file ${file.id} for account ${accountId}:`, e);
-              }
-            }
-          }
-
-          if (filesInserted > 0) {
-            updateAccountUpdatedTime(accountId);
-          }
-
-          totalInserted += filesInserted;
           results.push({
             account_id: accountId,
             success: result.success,
-            files_inserted: filesInserted,
             torrent_id: result.data?.torrent_id,
             error: !result.success
               ? ((result as any).detail || (result as any).error || "TorBox rejected addition")
@@ -129,7 +89,6 @@ export async function POST(request: Request) {
           results.push({
             account_id: accountId,
             success: false,
-            files_inserted: 0,
             error: e instanceof Error ? e.message : `Failed for account ${accountId}`,
           });
         }
@@ -138,9 +97,31 @@ export async function POST(request: Request) {
       const allSucceeded = results.every(r => r.success);
       const anySucceeded = results.some(r => r.success);
 
+      if (anySucceeded && Array.isArray(cached_files) && cached_files.length > 0) {
+        const firstVideo =
+          (cached_files as CachedFilePayload[]).find(f => isVideoFile(f.name, f.mimetype)) ||
+          cached_files[0];
+        const filename = firstVideo
+          ? (firstVideo.short_name || firstVideo.name.split("/").pop() || firstVideo.name)
+          : "Media";
+        const parsed = parseMediaFilename(filename);
+
+        return NextResponse.json({
+          success: true,
+          status: "action_needed",
+          results,
+          torrent_hash: torrent_hash || null,
+          torrent_name: filename,
+          cached_files: cached_files,
+          parsed_title: parsed.title,
+          parsed_year: parsed.year || null,
+          detected_category: parsed.mediaType === "tv" ? "tv" : "movie",
+        });
+      }
+
       return NextResponse.json({
         success: anySucceeded,
-        total_inserted: totalInserted,
+        total_inserted: 0,
         results,
         status: allSucceeded ? "completed" : anySucceeded ? "partial" : "failed",
       });

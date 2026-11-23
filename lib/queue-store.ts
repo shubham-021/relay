@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 
 // --- Types ---
 
-export type AccountStatus = "completed" | "failed" | "queued" | "in-progress";
+export type AccountStatus = "completed" | "failed" | "queued" | "in-progress" | "action-needed";
 
 export interface AccountStatusEntry {
   status: AccountStatus;
@@ -14,9 +14,9 @@ export type AccountStatusByHash = Record<string, Record<number, AccountStatusEnt
 
 export interface AccountResult {
   account_id: number;
-  account_email: string;
+  account_email?: string;
   success: boolean;
-  files_inserted: number;
+  files_inserted?: number;
   torrent_id?: number;
   error?: string;
 }
@@ -30,15 +30,18 @@ export interface QueueItem {
   cachedFiles: any[];
   accountIds: number[];
   accountEmails: Record<number, string>;
-  status: "queued" | "in-progress" | "completed" | "failed" | "partial";
+  status: "queued" | "in-progress" | "action-needed" | "completed" | "failed" | "partial";
   message?: string;
   error?: string;
   results?: AccountResult[];
   totalInserted?: number;
-  metadataHints?: {
-    name?: string;
-    year?: string;
-    category?: "movie" | "tv";
+  actionPayload?: {
+    accountResults: Array<{ account_id: number; torrent_id: number }>;
+    torrentHash: string | null;
+    cachedFiles: any[];
+    parsedTitle: string;
+    parsedYear?: string;
+    detectedCategory: "movie" | "tv";
   };
   createdAt: number;
   completedAt?: number;
@@ -47,12 +50,12 @@ export interface QueueItem {
 const QUEUE_LIMIT = 10;
 
 interface AddQueueState {
-  // Active queue (queued + in-progress items)
+  // Active queue (queued + in-progress + action-needed items)
   queue: QueueItem[];
-  // Completed items (success, failed, partial — stay until manually dismissed)
+  // Completed items (success, failed, partial — stay until dismissed)
   completed: QueueItem[];
-  // Whether the hub panel is expanded
-  hubExpanded: boolean;
+  // Currently active action item ID for TMDB selection modal
+  activeActionId: string | null;
   // Currently processing flag
   isProcessing: boolean;
   // Per-torrent, per-account status map (persisted across page reloads)
@@ -60,16 +63,20 @@ interface AddQueueState {
 
   // Actions
   enqueue: (item: Omit<QueueItem, "id" | "status" | "createdAt">) => boolean;
+  dismissItem: (id: string) => void;
   dismissCompleted: (id: string) => void;
   clearAllCompleted: () => void;
   clearPassedCompleted: () => void;
-  setHubExpanded: (expanded: boolean) => void;
-  toggleHub: () => void;
   cancelQueued: (id: string) => void;
   retryFailed: (id: string) => void;
+  setActiveActionId: (id: string | null) => void;
+  resolveActionItem: (
+    id: string,
+    selection?: { tmdbId: number; category: "movie" | "tv" }
+  ) => Promise<void>;
 
   // Status lookups
-  getHashStatus: (hash: string) => "queued" | "in-progress" | "completed" | "failed" | "partial" | null;
+  getHashStatus: (hash: string) => "queued" | "in-progress" | "action-needed" | "completed" | "failed" | "partial" | null;
   getAccountStatuses: (hash: string) => Record<number, AccountStatusEntry>;
 
   // Internal — called by the queue runner
@@ -88,9 +95,27 @@ export const useAddQueueStore = create<AddQueueState>()(
     (set, get) => ({
       queue: [],
       completed: [],
-      hubExpanded: false,
+      activeActionId: null,
       isProcessing: false,
       accountStatusByHash: {},
+
+      setActiveActionId: (id) => set({ activeActionId: id }),
+
+      dismissItem: (id) => {
+        const item = get().queue.find((i) => i.id === id) || get().completed.find((i) => i.id === id);
+        const nextStatusByHash = { ...get().accountStatusByHash };
+        if (item) {
+          if (item.status === "failed" || item.status === "partial" || item.status === "action-needed") {
+            delete nextStatusByHash[item.torrentHash];
+          }
+        }
+        set((state) => ({
+          queue: state.queue.filter((i) => i.id !== id),
+          completed: state.completed.filter((i) => i.id !== id),
+          activeActionId: state.activeActionId === id ? null : state.activeActionId,
+          accountStatusByHash: nextStatusByHash,
+        }));
+      },
 
       getHashStatus: (hash: string) => {
         const { queue, accountStatusByHash } = get();
@@ -156,7 +181,6 @@ export const useAddQueueStore = create<AddQueueState>()(
         set((state) => ({
           queue: [...state.queue, newItem],
           accountStatusByHash: nextStatusByHash,
-          hubExpanded: true,
         }));
 
         // Kick off processing if idle
@@ -214,14 +238,127 @@ export const useAddQueueStore = create<AddQueueState>()(
         setTimeout(() => get()._processNext(), 0);
       },
 
+      resolveActionItem: async (id, selection) => {
+        const { queue } = get();
+        const target = queue.find((i) => i.id === id);
+        if (!target) return;
+
+        // Set item to in-progress
+        set((state) => ({
+          queue: state.queue.map((i) =>
+            i.id === id
+              ? { ...i, status: "in-progress" as const, message: "Saving metadata..." }
+              : i
+          ),
+          activeActionId: state.activeActionId === id ? null : state.activeActionId,
+        }));
+
+        try {
+          const res = await fetch("/api/torrent/finalize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              account_results: target.actionPayload?.accountResults || [],
+              torrent_hash: target.actionPayload?.torrentHash || target.torrentHash,
+              torrent_name: target.torrentName,
+              cached_files: target.actionPayload?.cachedFiles || target.cachedFiles || [],
+              auto: !selection,
+              tmdb_id: selection?.tmdbId,
+              category: selection?.category,
+            }),
+          });
+
+          const data = await res.json();
+          const finalStatus: QueueItem["status"] = res.ok ? "completed" : "failed";
+          const totalFiles = data.total_inserted || 0;
+          const message = res.ok
+            ? totalFiles > 0
+              ? `Added • ${totalFiles} file${totalFiles > 1 ? "s" : ""} indexed`
+              : "Added successfully"
+            : `Failed (${data.error || "Unknown error"})`;
+
+          const completedItem: QueueItem = {
+            ...target,
+            status: finalStatus,
+            message,
+            error: res.ok ? undefined : data.error,
+            totalInserted: totalFiles,
+            completedAt: Date.now(),
+          };
+          delete completedItem.actionPayload;
+
+          const updatedStatusByHash = { ...get().accountStatusByHash };
+          const finalForHash = { ...(updatedStatusByHash[target.torrentHash] || {}) };
+          for (const accId of target.accountIds) {
+            finalForHash[accId] = {
+              status: res.ok ? "completed" : "failed",
+              error: res.ok ? undefined : data.error,
+            };
+          }
+          updatedStatusByHash[target.torrentHash] = finalForHash;
+
+          set((state) => ({
+            queue: state.queue.filter((i) => i.id !== id),
+            completed: [completedItem, ...state.completed],
+            accountStatusByHash: updatedStatusByHash,
+          }));
+
+          if (res.ok) {
+            window.dispatchEvent(new CustomEvent("torrent-files-updated"));
+          }
+
+          // Auto-dismiss completed item after 4 seconds so it animates out cleanly
+          if (res.ok) {
+            setTimeout(() => {
+              get().dismissItem(id);
+            }, 4000);
+          }
+        } catch (err: any) {
+          const errorMsg = err.message || "Failed to finalize";
+          const failedItem: QueueItem = {
+            ...target,
+            status: "failed" as const,
+            error: errorMsg,
+            message: `Failed (${errorMsg})`,
+            completedAt: Date.now(),
+          };
+          delete failedItem.actionPayload;
+
+          const updatedStatusByHash = { ...get().accountStatusByHash };
+          const finalForHash = { ...(updatedStatusByHash[target.torrentHash] || {}) };
+          for (const accId of target.accountIds) {
+            finalForHash[accId] = { status: "failed", error: errorMsg };
+          }
+          updatedStatusByHash[target.torrentHash] = finalForHash;
+
+          set((state) => ({
+            queue: state.queue.filter((i) => i.id !== id),
+            completed: [failedItem, ...state.completed],
+            accountStatusByHash: updatedStatusByHash,
+          }));
+        }
+      },
+
       dismissCompleted: (id) => {
+        const item = get().completed.find((i) => i.id === id);
+        const nextStatusByHash = { ...get().accountStatusByHash };
+        if (item && (item.status === "failed" || item.status === "partial")) {
+          delete nextStatusByHash[item.torrentHash];
+        }
         set((state) => ({
           completed: state.completed.filter((item) => item.id !== id),
+          accountStatusByHash: nextStatusByHash,
         }));
       },
 
       clearAllCompleted: () => {
-        set({ completed: [] });
+        const nextStatusByHash = { ...get().accountStatusByHash };
+        for (const item of get().completed) {
+          if (item.status === "failed" || item.status === "partial") {
+            delete nextStatusByHash[item.torrentHash];
+          }
+        }
+        set({ completed: [], accountStatusByHash: nextStatusByHash });
       },
 
       clearPassedCompleted: () => {
@@ -229,10 +366,6 @@ export const useAddQueueStore = create<AddQueueState>()(
           completed: state.completed.filter((item) => item.status !== "completed"),
         }));
       },
-
-      setHubExpanded: (expanded) => set({ hubExpanded: expanded }),
-
-      toggleHub: () => set((state) => ({ hubExpanded: !state.hubExpanded })),
 
       _isHashQueued: (hash) => {
         const { queue } = get();
@@ -274,7 +407,6 @@ export const useAddQueueStore = create<AddQueueState>()(
               account_ids: nextItem.accountIds,
               cached_files: nextItem.cachedFiles,
               torrent_hash: nextItem.torrentHash,
-              metadata_hints: nextItem.metadataHints,
             }),
           });
 
@@ -315,6 +447,47 @@ export const useAddQueueStore = create<AddQueueState>()(
             finalStatus = "failed";
             error = data.error || "Unknown error";
             message = `Failed (${error})`;
+          } else if (data.status === "action_needed") {
+            const actionPayload = {
+              accountResults: (data.results as AccountResult[])
+                .filter((r) => r.success && r.torrent_id)
+                .map((r) => ({
+                  account_id: r.account_id,
+                  torrent_id: r.torrent_id!,
+                })),
+              torrentHash: data.torrent_hash || nextItem.torrentHash,
+              cachedFiles: data.cached_files || nextItem.cachedFiles || [],
+              parsedTitle: data.parsed_title || nextItem.torrentName,
+              parsedYear: data.parsed_year || undefined,
+              detectedCategory: (data.detected_category || "movie") as "movie" | "tv",
+            };
+
+            const actionItem: QueueItem = {
+              ...nextItem,
+              status: "action-needed",
+              message: "Action Needed: Select Metadata",
+              results: data.results,
+              actionPayload,
+            };
+
+            const actionStatusByHash = { ...get().accountStatusByHash };
+            const currentForHash = { ...(actionStatusByHash[nextItem.torrentHash] || {}) };
+            for (const accId of nextItem.accountIds) {
+              currentForHash[accId] = { status: "action-needed" };
+            }
+            actionStatusByHash[nextItem.torrentHash] = currentForHash;
+
+            set((state) => ({
+              queue: state.queue.map((item) =>
+                item.id === nextItem.id ? actionItem : item
+              ),
+              accountStatusByHash: actionStatusByHash,
+              isProcessing: false,
+            }));
+
+            // Process next queued item if any
+            setTimeout(() => get()._processNext(), 0);
+            return;
           } else if (data.status === "completed") {
             finalStatus = "completed";
             const totalFiles = data.total_inserted || 0;
@@ -389,6 +562,13 @@ export const useAddQueueStore = create<AddQueueState>()(
           if (finalStatus === "completed" || finalStatus === "partial") {
             window.dispatchEvent(new CustomEvent("torrent-files-updated"));
           }
+
+          // Auto-dismiss completed item after 4 seconds
+          if (finalStatus === "completed") {
+            setTimeout(() => {
+              get().dismissItem(nextItem.id);
+            }, 4000);
+          }
         } catch (err) {
           const errorMsg =
             err instanceof Error ? err.message : "Failed to add torrent";
@@ -424,11 +604,31 @@ export const useAddQueueStore = create<AddQueueState>()(
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? window.localStorage : (dummyStorage as any)
       ),
-      partialize: (state) => ({
-        queue: state.queue,
-        completed: state.completed,
-        accountStatusByHash: state.accountStatusByHash,
-      }),
+      partialize: (state) => {
+        // Only persist completed statuses; failed, partial, and action-needed must NEVER persist across reloads
+        const cleanStatusByHash: AccountStatusByHash = {};
+        for (const [hash, accMap] of Object.entries(state.accountStatusByHash)) {
+          const completedOnly: Record<number, AccountStatusEntry> = {};
+          for (const [accId, entry] of Object.entries(accMap)) {
+            if (entry.status === "completed") {
+              completedOnly[Number(accId)] = entry;
+            }
+          }
+          if (Object.keys(completedOnly).length > 0) {
+            cleanStatusByHash[hash] = completedOnly;
+          }
+        }
+
+        const cleanQueue = state.queue.filter(
+          (item) => item.status === "queued" || item.status === "action-needed"
+        );
+
+        return {
+          queue: cleanQueue,
+          completed: [], // Do not persist completed items across reloads so they do not linger
+          accountStatusByHash: cleanStatusByHash,
+        };
+      },
     }
   )
 );

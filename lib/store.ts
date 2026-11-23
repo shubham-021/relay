@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { FileItem, BreadcrumbItem, TorBoxAccount } from "@/lib/types";
 
 const CONTINUE_WATCHING_COLLAPSED_KEY = "relay-continue-watching-collapsed";
+const SIDEBAR_COLLAPSED_KEY = "relay-sidebar-collapsed";
 
 function readContinueWatchingCollapsed(): boolean {
   if (typeof window === "undefined") return false;
@@ -16,6 +17,24 @@ function writeContinueWatchingCollapsed(collapsed: boolean): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(CONTINUE_WATCHING_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function readSidebarCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
   } catch {
     // ignore storage errors
   }
@@ -58,6 +77,7 @@ interface FileStoreState {
   setSortKey: (key: SortKey) => void;
   setSortOrder: (order: SortOrder) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  hydrateSidebarCollapsed: () => void;
   setContinueWatchingCollapsed: (collapsed: boolean) => void;
   hydrateContinueWatchingCollapsed: () => void;
   toggleSort: () => void;
@@ -89,7 +109,16 @@ export const useFileStore = create<FileStoreState>((set, get) => ({
   setSearchQuery: (query) => set({ searchQuery: query }),
   setSortKey: (key) => set({ sortKey: key }),
   setSortOrder: (order) => set({ sortOrder: order }),
-  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+  setSidebarCollapsed: (collapsed) => {
+    writeSidebarCollapsed(collapsed);
+    set({ sidebarCollapsed: collapsed });
+  },
+  hydrateSidebarCollapsed: () => {
+    const stored = readSidebarCollapsed();
+    if (get().sidebarCollapsed !== stored) {
+      set({ sidebarCollapsed: stored });
+    }
+  },
   setContinueWatchingCollapsed: (collapsed) => {
     writeContinueWatchingCollapsed(collapsed);
     set({ continueWatchingCollapsed: collapsed });

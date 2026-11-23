@@ -1,34 +1,41 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Loader2,
   CheckCircle2,
   XCircle,
   AlertTriangle,
   Clock,
-  ChevronUp,
-  ChevronDown,
   X,
   Info,
   RotateCcw,
-  Trash2,
   Zap,
+  Sparkles,
+  Search,
+  Film,
+  Tv,
+  Check,
 } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { AccountBadge } from "@/components/account-badge";
 import { useAddQueueStore, type QueueItem } from "@/lib/queue-store";
+import { useFileStore } from "@/lib/store";
 import { formatBytes, cn } from "@/lib/utils";
 
-// --- Info Popover ---
+// --- Info Popover Modal ---
 
-function QueueItemInfo({
+function QueueItemInfoModal({
   item,
   accounts,
   onClose,
@@ -49,7 +56,7 @@ function QueueItemInfo({
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 shrink-0"
+            className="h-6 w-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 shrink-0 cursor-pointer"
             onClick={onClose}
           >
             <X size={14} />
@@ -58,7 +65,6 @@ function QueueItemInfo({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 pb-8 space-y-4 min-h-0">
-          {/* Torrent Name */}
           <div className="p-3 rounded-xl bg-zinc-800/40 border border-zinc-700/50">
             <p className="text-[11px] uppercase tracking-wider text-zinc-400 font-semibold mb-1">
               Torrent
@@ -68,7 +74,6 @@ function QueueItemInfo({
             </p>
           </div>
 
-          {/* Size & Hash */}
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 rounded-xl bg-zinc-800/40 border border-zinc-700/50">
               <p className="text-[11px] uppercase tracking-wider text-zinc-400 font-semibold mb-1">
@@ -88,7 +93,6 @@ function QueueItemInfo({
             </div>
           </div>
 
-          {/* Accounts */}
           <div>
             <p className="text-[11px] uppercase tracking-wider text-zinc-400 font-semibold mb-2">
               Target Accounts ({item.accountIds.length})
@@ -96,9 +100,7 @@ function QueueItemInfo({
             <div className="space-y-2">
               {item.accountIds.map((accountId) => {
                 const email = item.accountEmails[accountId] || "Unknown";
-                const result = item.results?.find(
-                  (r) => r.account_id === accountId
-                );
+                const result = item.results?.find((r) => r.account_id === accountId);
 
                 return (
                   <div
@@ -107,15 +109,15 @@ function QueueItemInfo({
                   >
                     <div className="flex items-center gap-2.5">
                       <AccountBadge accountId={accountId} email={email} />
-                      <span className="text-xs text-zinc-200 font-medium truncate flex-1">{email}</span>
+                      <span className="text-xs text-zinc-200 font-medium truncate flex-1">
+                        {email}
+                      </span>
                       {result && (
                         <span className="shrink-0">
                           {result.success ? (
                             <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
                               <CheckCircle2 size={12} />
-                              {result.files_inserted > 0
-                                ? `${result.files_inserted} files`
-                                : "Success"}
+                              Success
                             </span>
                           ) : (
                             <span className="flex items-center gap-1 text-[11px] font-medium text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">
@@ -125,17 +127,7 @@ function QueueItemInfo({
                           )}
                         </span>
                       )}
-                      {!result && item.status === "in-progress" && (
-                        <Loader2
-                          size={13}
-                          className="animate-spin text-primary shrink-0"
-                        />
-                      )}
-                      {!result && item.status === "queued" && (
-                        <span className="text-[11px] text-zinc-400">Waiting</span>
-                      )}
                     </div>
-                    {/* Inline error for this specific account if failed */}
                     {result && !result.success && result.error && (
                       <div className="mt-2 pt-2 border-t border-red-500/20 text-[11px] text-red-300 font-mono break-all leading-normal flex items-start gap-1.5">
                         <AlertTriangle size={12} className="shrink-0 text-red-400 mt-0.5" />
@@ -147,394 +139,437 @@ function QueueItemInfo({
               })}
             </div>
           </div>
-
-          {/* Overall Error Details (styled box, no cut-off!) */}
-          {item.error && (
-            <div className="rounded-xl bg-red-950/40 border border-red-500/30 p-3.5 space-y-1.5">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-red-400">
-                <AlertTriangle size={14} className="shrink-0 text-red-400" />
-                <span>Error Details</span>
-              </div>
-              <div className="text-xs text-red-200/95 font-mono break-all leading-relaxed select-text bg-red-950/60 p-2.5 rounded-lg border border-red-500/20 max-h-48 overflow-y-auto">
-                {item.error}
-              </div>
-            </div>
-          )}
-
-          {/* Timing Footer */}
-          <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-3 border-t border-zinc-800">
-            <span>Queued: {new Date(item.createdAt).toLocaleTimeString()}</span>
-            {item.completedAt && (
-              <span>Completed: {new Date(item.completedAt).toLocaleTimeString()}</span>
-            )}
-          </div>
-          <div className="h-1" />
         </div>
       </div>
     </div>
   );
 }
 
-// --- Queue Item Row ---
+// --- TMDB Match Selection Dialog ---
 
-function QueueItemRow({
+interface SearchCandidate {
+  id: number;
+  title: string;
+  year: string;
+  posterPath: string | null;
+  backdropPath: string | null;
+  overview: string | null;
+  mediaType: "movie" | "tv";
+}
+
+function QueueTmdbSelectionDialog({
   item,
-  accounts,
-  variant,
+  onClose,
+  onResolve,
 }: {
   item: QueueItem;
-  accounts: any[];
-  variant: "active" | "completed";
+  onClose: () => void;
+  onResolve: (selection?: { tmdbId: number; category: "movie" | "tv" }) => void;
 }) {
-  const [showInfo, setShowInfo] = useState(false);
-  const { cancelQueued, dismissCompleted, retryFailed } = useAddQueueStore();
+  const [category, setCategory] = useState<"movie" | "tv">(
+    item.actionPayload?.detectedCategory || "movie"
+  );
+  const [query, setQuery] = useState(
+    item.actionPayload?.parsedTitle || item.torrentName
+  );
+  const [searchResults, setSearchResults] = useState<SearchCandidate[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [selectedCandidate, setSelectedCandidate] = useState<SearchCandidate | null>(null);
 
-  const statusIcon =
-    item.status === "in-progress" ? (
-      <Loader2 size={15} className="animate-spin text-primary shrink-0" />
-    ) : item.status === "queued" ? (
-      <Clock size={15} className="text-zinc-400 shrink-0" />
-    ) : item.status === "completed" ? (
-      <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
-    ) : item.status === "partial" ? (
-      <AlertTriangle size={15} className="text-amber-400 shrink-0" />
-    ) : (
-      <XCircle size={15} className="text-red-400 shrink-0" />
-    );
+  const performSearch = useCallback(async (q: string, cat: "movie" | "tv") => {
+    if (!q || q.trim().length < 2) return;
+    setIsSearching(true);
+    try {
+      const res = await fetch(
+        `/api/metadata?action=search&query=${encodeURIComponent(q.trim())}&category=${cat}`
+      );
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.results)) {
+        setSearchResults(data.results);
+      } else {
+        setSearchResults([]);
+      }
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    performSearch(query, category);
+  }, [category, performSearch, query]);
+
+  const handleCategorySwitch = (cat: "movie" | "tv") => {
+    setCategory(cat);
+    setSelectedCandidate(null);
+  };
+
+  const handleConfirm = () => {
+    if (selectedCandidate) {
+      onResolve({ tmdbId: selectedCandidate.id, category });
+    } else {
+      onResolve(undefined); // Auto fallback
+    }
+  };
+
+  const handleSkip = () => {
+    onResolve(undefined); // Auto fallback per specification #3
+  };
 
   return (
-    <>
-      <div
-        className={cn(
-          "flex items-center gap-2.5 px-3.5 py-3 group transition-colors",
-          "hover:bg-zinc-800/40"
-        )}
-      >
-        {/* Status icon */}
-        {statusIcon}
+    <Dialog open onOpenChange={(open) => { if (!open) handleSkip(); }}>
+      <DialogContent className="sm:max-w-xl max-h-[88vh] flex flex-col bg-zinc-900 border-zinc-700/80 ring-1 ring-white/10 shadow-2xl p-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-5 pb-3 bg-zinc-800/40 border-b border-zinc-800">
+          <DialogTitle className="text-zinc-100 flex items-center gap-2">
+            <Sparkles size={16} className="text-primary" />
+            Match Media: <span className="font-normal text-zinc-300 truncate max-w-[340px]">{item.torrentName}</span>
+          </DialogTitle>
+          <DialogDescription className="text-zinc-400 text-xs">
+            Select the correct TMDB entry to link metadata and poster artwork
+          </DialogDescription>
+        </DialogHeader>
 
-        {/* Name + subtitle */}
-        <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-medium text-zinc-200 truncate leading-tight">
-            {item.torrentName}
-          </p>
-          <p
-            className={cn(
-              "text-[11px] truncate mt-0.5",
-              item.status === "failed"
-                ? "text-red-400/90 font-medium"
-                : item.status === "completed"
-                ? "text-emerald-400/90 font-medium"
-                : item.status === "partial"
-                ? "text-amber-400/90 font-medium"
-                : item.status === "in-progress"
-                ? "text-primary font-medium"
-                : "text-zinc-400"
-            )}
-            title={item.status === "failed" ? item.error || item.message : undefined}
-          >
-            {item.status === "queued" && "Waiting in queue..."}
-            {item.status === "in-progress" && (item.message || "Adding to TorBox...")}
-            {item.status === "completed" && (item.message || "Added successfully")}
-            {item.status === "partial" && (item.message || "Partially added")}
-            {item.status === "failed" && (item.error ? `Failed: ${item.error}` : item.message || "Failed")}
-          </p>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-1 shrink-0">
-          {/* Info button */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50"
-                onClick={() => setShowInfo(true)}
+        <div className="p-6 space-y-4 flex-1 overflow-y-auto">
+          {/* Category Switcher */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-zinc-300">Category</span>
+            <div className="inline-flex rounded-lg bg-zinc-950 p-1 border border-zinc-800">
+              <button
+                type="button"
+                onClick={() => handleCategorySwitch("movie")}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1 text-xs rounded-md font-medium transition-all cursor-pointer",
+                  category === "movie"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                )}
               >
-                <Info size={13} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="left" className="text-xs">
-              Details
-            </TooltipContent>
-          </Tooltip>
+                <Film size={13} />
+                Movie
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCategorySwitch("tv")}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1 text-xs rounded-md font-medium transition-all cursor-pointer",
+                  category === "tv"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                )}
+              >
+                <Tv size={13} />
+                Series
+              </button>
+            </div>
+          </div>
 
-          {/* Cancel (queued only) */}
-          {item.status === "queued" && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
-                  onClick={() => cancelQueued(item.id)}
-                >
-                  <X size={13} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="text-xs">
-                Cancel
-              </TooltipContent>
-            </Tooltip>
-          )}
-
-          {/* Retry (failed / partial) */}
-          {variant === "completed" &&
-            (item.status === "failed" || item.status === "partial") && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-zinc-400 hover:text-primary hover:bg-primary/10"
-                    onClick={() => retryFailed(item.id)}
-                  >
-                    <RotateCcw size={13} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="left" className="text-xs">
-                  Retry
-                </TooltipContent>
-              </Tooltip>
+          {/* Search Input */}
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${category === "movie" ? "movies" : "TV series"}...`}
+              className="pl-9 h-9 text-xs bg-zinc-950 border-zinc-800 text-zinc-100 placeholder:text-zinc-500 focus-visible:ring-primary/40"
+            />
+            {isSearching && (
+              <Loader2 size={13} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-zinc-400" />
             )}
+          </div>
 
-          {/* Dismiss (completed items) */}
-          {variant === "completed" && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50"
-                  onClick={() => dismissCompleted(item.id)}
-                >
-                  <X size={13} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="text-xs">
-                Dismiss
-              </TooltipContent>
-            </Tooltip>
-          )}
+          {/* Candidates List */}
+          <div className="space-y-1.5 max-h-[36vh] overflow-y-auto pr-1">
+            {isSearching && searchResults.length === 0 ? (
+              <div className="py-10 text-center text-zinc-500 text-xs">
+                Searching TMDB for &quot;{query}&quot;...
+              </div>
+            ) : searchResults.length === 0 ? (
+              <div className="py-10 text-center text-zinc-500 text-xs">
+                No matching results found. Try tweaking the search query above.
+              </div>
+            ) : (
+              searchResults.map((cand) => {
+                const isSelected = selectedCandidate?.id === cand.id;
+                return (
+                  <button
+                    key={cand.id}
+                    type="button"
+                    onClick={() => setSelectedCandidate(cand)}
+                    className={cn(
+                      "w-full flex items-center gap-3 p-2 rounded-xl border text-left transition-all cursor-pointer",
+                      isSelected
+                        ? "border-primary bg-primary/10 ring-1 ring-primary/40"
+                        : "border-zinc-800/80 bg-zinc-950/40 hover:bg-zinc-800/40"
+                    )}
+                  >
+                    {/* Poster */}
+                    <div className="w-10 h-14 bg-zinc-800 rounded shrink-0 overflow-hidden border border-zinc-700/50">
+                      {cand.posterPath ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={`https://image.tmdb.org/t/p/w92${cand.posterPath}`}
+                          alt={cand.title}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-zinc-600">
+                          {category === "movie" ? <Film size={16} /> : <Tv size={16} />}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Details */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xs font-semibold text-zinc-100 truncate">
+                          {cand.title}
+                        </span>
+                        {cand.year && (
+                          <span className="text-[11px] text-zinc-400 shrink-0">
+                            ({cand.year})
+                          </span>
+                        )}
+                      </div>
+                      {cand.overview && (
+                        <p className="text-[11px] text-zinc-400 line-clamp-1 mt-0.5">
+                          {cand.overview}
+                        </p>
+                      )}
+                      <div className="text-[10px] text-zinc-500 mt-1">TMDB ID: {cand.id}</div>
+                    </div>
+
+                    {/* Select Indicator */}
+                    <div className="shrink-0 pl-1">
+                      {isSelected ? (
+                        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center text-primary-foreground">
+                          <Check size={11} strokeWidth={3} />
+                        </div>
+                      ) : (
+                        <div className="w-5 h-5 rounded-full border border-zinc-700" />
+                      )}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* Info Modal */}
-      {showInfo && (
-        <QueueItemInfo
-          item={item}
-          accounts={accounts}
-          onClose={() => setShowInfo(false)}
-        />
-      )}
-    </>
+        <DialogFooter className="px-6 py-3.5 bg-zinc-800/40 border-t border-zinc-800 flex items-center justify-between sm:justify-between">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleSkip}
+            className="text-xs text-zinc-400 hover:text-zinc-200 cursor-pointer"
+          >
+            Skip (Use Auto)
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleConfirm}
+            disabled={!selectedCandidate}
+            className="text-xs bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer gap-1.5"
+          >
+            <Check size={13} />
+            Confirm & Add
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-// --- Main Queue Hub ---
+// --- Main Queue Hub Component (Bottom Conveyor) ---
 
-export function QueueHub({ accounts }: { accounts: any[] }) {
+export function QueueHub({ accounts: propAccounts }: { accounts?: any[] }) {
   const {
     queue,
     completed,
-    hubExpanded,
-    toggleHub,
-    clearAllCompleted,
-    clearPassedCompleted,
+    activeActionId,
+    setActiveActionId,
+    resolveActionItem,
+    dismissItem,
+    cancelQueued,
+    retryFailed,
   } = useAddQueueStore();
 
-  const totalActive = queue.length;
-  const totalCompleted = completed.length;
-  const hasItems = totalActive > 0 || totalCompleted > 0;
-  const inProgress = queue.find((item) => item.status === "in-progress");
-  const failedCount = completed.filter(
-    (c) => c.status === "failed" || c.status === "partial"
-  ).length;
+  const storeAccounts = useFileStore((s) => s.accounts);
+  const accounts = propAccounts || storeAccounts || [];
 
-  // Don't render anything if there are no items at all
-  if (!hasItems) return null;
+  const [infoItem, setInfoItem] = useState<QueueItem | null>(null);
+
+  // Combine active queue and recent completed items for the horizontal conveyor
+  const allItems = [...queue, ...completed];
+  const activeActionItem = queue.find((i) => i.id === activeActionId);
+
+  if (allItems.length === 0) return null;
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-2">
-      {/* Expanded Hub — High contrast elevated panel */}
-      {hubExpanded && (
-        <div className="w-[400px] max-h-[480px] bg-zinc-900/98 border border-zinc-700/80 ring-1 ring-white/10 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.9)] rounded-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-3 fade-in duration-200">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 bg-zinc-800/80 border-b border-zinc-700/70 shrink-0">
-            <div className="flex items-center gap-2">
-              <Zap size={15} className="text-primary" />
-              <h3 className="text-sm font-semibold text-zinc-100">Transfer Queue</h3>
+    <>
+      {/* Bottom Horizontal Queue Bar */}
+      <div className="fixed bottom-5 inset-x-0 z-50 flex justify-center pointer-events-none px-4">
+        <motion.div
+          layout
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 30 }}
+          transition={{ type: "spring", stiffness: 350, damping: 28 }}
+          className="pointer-events-auto flex items-center gap-2 p-1.5 sm:p-2 rounded-2xl bg-zinc-950/90 backdrop-blur-xl border border-zinc-800/90 shadow-[0_20px_50px_rgba(0,0,0,0.85)] ring-1 ring-white/10 max-w-[95vw] overflow-x-auto scrollbar-none"
+        >
+          {/* Queue Header Badge */}
+          <div className="flex items-center gap-2 pl-2 pr-3 border-r border-zinc-800/90 shrink-0">
+            <div className="flex items-center justify-center w-7 h-7 rounded-xl bg-primary/20 text-primary">
+              <Zap size={14} className="fill-current" />
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded-full border border-zinc-700/60 font-medium">
-                {totalActive} / 10
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold text-zinc-200 tracking-wide leading-none">
+                Queue
               </span>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60"
-                onClick={toggleHub}
-              >
-                <ChevronDown size={14} />
-              </Button>
+              <span className="text-[10px] text-zinc-400 font-medium mt-0.5">
+                {queue.length} active
+              </span>
             </div>
           </div>
 
-          {/* Tabs */}
-          <Tabs
-            defaultValue={totalActive > 0 ? "queue" : "completed"}
-            className="flex-1 flex flex-col min-h-0"
-          >
-            <div className="px-3 pt-2.5 pb-1">
-              <TabsList className="w-full h-9 bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-1">
-                <TabsTrigger
-                  value="queue"
-                  className="text-xs gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100 text-zinc-400 hover:text-zinc-200 font-medium"
-                >
-                  Queue
-                  {totalActive > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-semibold rounded-full bg-primary/20 text-primary">
-                      {totalActive}
-                    </span>
+          {/* Horizontal Conveyor Track */}
+          <div className="flex items-center gap-2 overflow-x-auto scrollbar-none py-0.5 px-0.5">
+            <AnimatePresence mode="popLayout">
+              {allItems.map((item) => (
+                <motion.div
+                  key={item.id}
+                  layout
+                  initial={{ opacity: 0, x: 100, scale: 0.9 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={{ opacity: 0, x: -100, scale: 0.9 }}
+                  transition={{ type: "spring", stiffness: 380, damping: 28 }}
+                  className={cn(
+                    "flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-zinc-900/95 shadow-sm min-w-[240px] max-w-[320px] shrink-0 transition-colors",
+                    item.status === "action-needed"
+                      ? "border-amber-500/70 ring-1 ring-amber-500/30 bg-amber-950/25 hover:bg-amber-950/35 cursor-pointer"
+                      : item.status === "failed"
+                      ? "border-red-500/40 bg-red-500/5"
+                      : item.status === "completed"
+                      ? "border-emerald-500/30 bg-emerald-500/5"
+                      : "border-zinc-800 bg-zinc-900/90"
                   )}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="completed"
-                  className="text-xs gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100 text-zinc-400 hover:text-zinc-200 font-medium"
                 >
-                  Completed
-                  {totalCompleted > 0 && (
-                    <span
-                      className={cn(
-                        "inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-semibold rounded-full",
-                        failedCount > 0
-                          ? "bg-red-500/20 text-red-400"
-                          : "bg-emerald-500/20 text-emerald-400"
+                  {/* Status Icon */}
+                  <div className="shrink-0 flex items-center justify-center">
+                    {item.status === "in-progress" ? (
+                      <Loader2 size={14} className="animate-spin text-primary" />
+                    ) : item.status === "action-needed" ? (
+                      <AlertTriangle size={14} className="text-amber-400 shrink-0 animate-pulse" />
+                    ) : item.status === "completed" ? (
+                      <CheckCircle2 size={14} className="text-emerald-400" />
+                    ) : item.status === "failed" ? (
+                      <XCircle size={14} className="text-red-400" />
+                    ) : (
+                      <Clock size={14} className="text-zinc-400" />
+                    )}
+                  </div>
+
+                  {/* Title & Status Message */}
+                  <div
+                    className="flex-1 min-w-0 cursor-pointer"
+                    onClick={() => {
+                      if (item.status === "action-needed") {
+                        setActiveActionId(item.id);
+                      } else {
+                        setInfoItem(item);
+                      }
+                    }}
+                    title={item.status === "action-needed" ? "Click to match TMDB metadata" : "Click for details"}
+                  >
+                    <p className="text-xs font-semibold text-zinc-100 truncate leading-snug">
+                      {item.torrentName}
+                    </p>
+                    <p className="text-[10px] text-zinc-400 truncate leading-tight mt-0.5">
+                      {item.status === "action-needed" ? (
+                        <span className="text-amber-300 font-medium">Partially Added • Select Metadata</span>
+                      ) : (
+                        item.message ||
+                        (item.status === "queued"
+                          ? "Waiting in queue"
+                          : item.status === "completed"
+                          ? "Added successfully"
+                          : "Processing...")
                       )}
-                    >
-                      {totalCompleted}
-                    </span>
-                  )}
-                </TabsTrigger>
-              </TabsList>
-            </div>
+                    </p>
+                  </div>
 
-            {/* Queue Tab */}
-            <TabsContent
-              value="queue"
-              className="flex-1 overflow-y-auto min-h-0 m-0"
-            >
-              {totalActive === 0 ? (
-                <div className="flex items-center justify-center py-12 text-zinc-500">
-                  <p className="text-xs">Queue is empty</p>
-                </div>
-              ) : (
-                <div className="divide-y divide-zinc-800/50">
-                  {queue.map((item) => (
-                    <QueueItemRow
-                      key={item.id}
-                      item={item}
-                      accounts={accounts}
-                      variant="active"
-                    />
-                  ))}
-                </div>
-              )}
-            </TabsContent>
-
-            {/* Completed Tab */}
-            <TabsContent
-              value="completed"
-              className="flex-1 overflow-y-auto min-h-0 m-0"
-            >
-              {totalCompleted === 0 ? (
-                <div className="flex items-center justify-center py-12 text-zinc-500">
-                  <p className="text-xs">No completed items</p>
-                </div>
-              ) : (
-                <>
-                  {/* Clear actions */}
-                  <div className="flex items-center justify-end gap-1.5 px-3 py-1.5 border-b border-zinc-800/50 bg-zinc-900/60">
-                    {completed.some((c) => c.status === "completed") && (
+                  {/* Actions on Item */}
+                  <div className="shrink-0 flex items-center gap-1">
+                    {item.status === "action-needed" && (
                       <Button
-                        variant="ghost"
                         size="sm"
-                        className="h-6 text-[11px] text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 gap-1 px-2"
-                        onClick={clearPassedCompleted}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveActionId(item.id);
+                        }}
+                        className="h-6.5 px-2.5 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-lg gap-1 cursor-pointer shadow-xs"
                       >
-                        Clear passed
+                        <Sparkles size={11} className="fill-zinc-950" />
+                        Select
                       </Button>
                     )}
+
+                    {item.status === "failed" && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => retryFailed(item.id)}
+                        className="h-6 w-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-md cursor-pointer"
+                        title="Retry"
+                      >
+                        <RotateCcw size={12} />
+                      </Button>
+                    )}
+
                     <Button
+                      size="icon"
                       variant="ghost"
-                      size="sm"
-                      className="h-6 text-[11px] text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 gap-1 px-2"
-                      onClick={clearAllCompleted}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (item.status === "queued") {
+                          cancelQueued(item.id);
+                        } else if (item.status === "action-needed") {
+                          resolveActionItem(item.id, undefined);
+                        } else {
+                          dismissItem(item.id);
+                        }
+                      }}
+                      className="h-6 w-6 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 rounded-md cursor-pointer"
+                      title={item.status === "queued" ? "Cancel" : item.status === "action-needed" ? "Skip & Use Auto" : "Dismiss"}
                     >
-                      <Trash2 size={11} />
-                      Clear all
+                      <X size={12} />
                     </Button>
                   </div>
-                  <div className="divide-y divide-zinc-800/50">
-                    {completed.map((item) => (
-                      <QueueItemRow
-                        key={item.id}
-                        item={item}
-                        accounts={accounts}
-                        variant="completed"
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
-            </TabsContent>
-          </Tabs>
-        </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        </motion.div>
+      </div>
+
+      {/* Info Popover Modal */}
+      {infoItem && (
+        <QueueItemInfoModal
+          item={infoItem}
+          accounts={accounts}
+          onClose={() => setInfoItem(null)}
+        />
       )}
 
-      {/* Collapsed Capsule — Elevated pill with clear contrast */}
-      <button
-        onClick={toggleHub}
-        className={cn(
-          "flex items-center gap-2.5 px-4 py-2.5 rounded-full border shadow-[0_12px_35px_rgba(0,0,0,0.7)] transition-all cursor-pointer",
-          "bg-zinc-900/95 hover:bg-zinc-800/95 border-zinc-700/80 ring-1 ring-white/10 backdrop-blur-md text-zinc-200 hover:scale-[1.02]",
-          failedCount > 0 && "border-red-500/40 ring-red-500/10"
-        )}
-      >
-        {inProgress ? (
-          <Loader2 size={14} className="animate-spin text-primary" />
-        ) : failedCount > 0 ? (
-          <XCircle size={14} className="text-red-400" />
-        ) : totalCompleted > 0 ? (
-          <CheckCircle2 size={14} className="text-emerald-400" />
-        ) : (
-          <Clock size={14} className="text-zinc-400" />
-        )}
-
-        <span className="text-xs font-medium max-w-[210px] truncate text-zinc-200">
-          {inProgress
-            ? `Adding "${inProgress.torrentName.slice(0, 25)}${inProgress.torrentName.length > 25 ? "..." : ""}"`
-            : totalActive > 0
-              ? `${totalActive} in queue`
-              : `${totalCompleted} completed`}
-          {totalActive > 0 && totalCompleted > 0 && !inProgress
-            ? ` • ${totalCompleted} done`
-            : ""}
-        </span>
-
-        {failedCount > 0 && (
-          <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
-            {failedCount}
-          </span>
-        )}
-
-        {hubExpanded ? (
-          <ChevronDown size={13} className="text-zinc-400" />
-        ) : (
-          <ChevronUp size={13} className="text-zinc-400" />
-        )}
-      </button>
-    </div>
+      {/* TMDB Selection Dialog for Action-Needed item */}
+      {activeActionItem && (
+        <QueueTmdbSelectionDialog
+          item={activeActionItem}
+          onClose={() => setActiveActionId(null)}
+          onResolve={(selection) => resolveActionItem(activeActionItem.id, selection)}
+        />
+      )}
+    </>
   );
 }

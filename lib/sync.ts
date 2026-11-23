@@ -38,7 +38,7 @@ import {
   type TmdbSearchOutcome,
 } from "./tmdb";
 
-function isVideoFile(filename: string, mimetype?: string): boolean {
+export function isVideoFile(filename: string, mimetype?: string): boolean {
   // Prefer mimetype check if available
   if (mimetype && mimetype.startsWith("video/")) return true;
   // Fallback to extension check

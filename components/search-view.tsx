@@ -327,10 +327,7 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
     setAccountDialogOpen(true);
   };
 
-  const handleAccountConfirm = async (
-    selectedAccountIds: number[],
-    metadataHints?: { name?: string; year?: string; category?: "movie" | "tv" }
-  ) => {
+  const handleAccountConfirm = async (selectedAccountIds: number[]) => {
     if (!pendingMagnet || selectedAccountIds.length === 0) return;
 
     const result = results.find((r) => r.infoHash === pendingMagnet.hash);
@@ -351,7 +348,6 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
       cachedFiles: pendingMagnet.cachedFiles,
       accountIds: selectedAccountIds,
       accountEmails,
-      metadataHints,
     });
 
     if (!enqueued) {
@@ -361,7 +357,6 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
 
     setAccountDialogOpen(false);
     setPendingMagnet(null);
-    toast.success(`"${torrentName.slice(0, 40)}${torrentName.length > 40 ? "..." : ""}" added to queue`);
   };
 
   return (
@@ -546,6 +541,15 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
                             </span>
                           );
                         }
+                        if (hashStatus === "action-needed") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                                <AlertTriangle size={13} /> Action Needed
+                              </span>
+                            </div>
+                          );
+                        }
                         if (hashStatus === "completed") {
                           return (
                             <div className="flex items-center gap-1.5">
@@ -688,6 +692,15 @@ export function SearchView({ accounts, hasAccounts, availableSources = [] }: Sea
                             <span className="flex items-center gap-1.5 text-xs font-medium text-primary bg-primary/10 px-2.5 py-1 rounded-full border border-primary/20">
                               <Loader2 size={13} className="animate-spin" /> Adding...
                             </span>
+                          );
+                        }
+                        if (hashStatus === "action-needed") {
+                          return (
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                                <AlertTriangle size={13} /> Action Needed
+                              </span>
+                            </div>
                           );
                         }
                         if (hashStatus === "completed") {

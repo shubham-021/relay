@@ -10,6 +10,7 @@ import { TvShowDetail } from "@/components/tv-show-detail";
 import { OtherFilesView } from "@/components/other-files-view";
 import { AddAccountForm } from "@/components/add-account-form";
 import { ContinueWatchingRow } from "@/components/continue-watching-row";
+import { QueueHub } from "@/components/queue-hub";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -508,6 +509,8 @@ export function FileBrowser({ userId, playerProtocol, hasAccounts, accounts: acc
           />
         )}
       </div>
+
+      <QueueHub accounts={accounts} />
     </div>
   );
 }

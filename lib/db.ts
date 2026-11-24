@@ -497,7 +497,7 @@ export function updateAccountSyncTime(accountId: number) {
   if (!db) return;
   try {
     db.query(
-      `UPDATE accounts SET last_synced_at = ${UTC_NOW_SQL}, last_updated_at = ${UTC_NOW_SQL} WHERE id = ?`
+      `UPDATE accounts SET last_synced_at = ${UTC_NOW_SQL} WHERE id = ?`
     ).run(accountId);
   } catch (e) {
     console.error("updateAccountSyncTime error:", e);
@@ -877,6 +877,168 @@ export interface PendingFileRecord {
   episodeNumber: number | null;
   episodeEndNumber: number | null;
   parsedYear: string | null;
+}
+
+export interface ExistingRemoteFile {
+  torrent_id: number;
+  file_id: number;
+  remote_path: string;
+  filename: string;
+  short_name: string | null;
+  size: number;
+  mime_type: string;
+  torrent_hash: string | null;
+  tmdb_id: number | null;
+  media_type: "movie" | "tv" | "other";
+  show_title: string | null;
+  raw_title: string | null;
+  raw_year: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  episode_end_number: number | null;
+  parsed_year: string | null;
+}
+
+export interface ExistingTorrent {
+  torrent_id: number;
+  torrent_name: string | null;
+  torrent_hash: string | null;
+  primary_media_type: string;
+  primary_title: string | null;
+  tmdb_id: number | null;
+}
+
+export function getExistingRemoteFilesForAccount(accountId: number): ExistingRemoteFile[] {
+  if (!db) return [];
+  try {
+    return db
+      .query(
+        `SELECT torrent_id, file_id, remote_path, filename, short_name, size, mime_type,
+                torrent_hash, tmdb_id, media_type, show_title, raw_title, raw_year,
+                season_number, episode_number, episode_end_number, parsed_year
+         FROM remote_list_cache
+         WHERE account_id = ?`
+      )
+      .all(accountId) as ExistingRemoteFile[];
+  } catch (e) {
+    console.error("getExistingRemoteFilesForAccount error:", e);
+    return [];
+  }
+}
+
+export function getExistingTorrentsForAccount(accountId: number): ExistingTorrent[] {
+  if (!db) return [];
+  try {
+    return db
+      .query(
+        `SELECT torrent_id, torrent_name, torrent_hash, primary_media_type, primary_title, tmdb_id
+         FROM torrents
+         WHERE account_id = ?`
+      )
+      .all(accountId) as ExistingTorrent[];
+  } catch (e) {
+    console.error("getExistingTorrentsForAccount error:", e);
+    return [];
+  }
+}
+
+export interface ApplySyncDiffParams {
+  accountId: number;
+  torrentsToUpsert: PendingTorrentRecord[];
+  filesToUpsert: PendingFileRecord[];
+  filesToDelete: Array<{ torrentId: number; fileId: number }>;
+  torrentsToDelete: number[];
+}
+
+/**
+ * Atomically apply sync diff: delete files/torrents removed on TorBox,
+ * upsert new or modified files and torrents.
+ * Unchanged files in remote_list_cache and torrents are untouched,
+ * preserving manual metadata edits and existing IDs.
+ */
+export function applySyncDiff(params: ApplySyncDiffParams) {
+  if (!db) return;
+  const { accountId, torrentsToUpsert, filesToUpsert, filesToDelete, torrentsToDelete } = params;
+
+  try {
+    const tx = db.transaction(() => {
+      // 1. Delete removed files and their associated user_watched and thumbnails
+      const delRemoteFileStmt = db.query(
+        "DELETE FROM remote_list_cache WHERE account_id = ? AND torrent_id = ? AND file_id = ?"
+      );
+      const delUserWatchedFileStmt = db.query(
+        "DELETE FROM user_watched WHERE account_id = ? AND torrent_id = ? AND file_id = ?"
+      );
+      const delThumbnailFileStmt = db.query(
+        "DELETE FROM file_thumbnails WHERE account_id = ? AND torrent_id = ? AND file_id = ?"
+      );
+
+      for (const f of filesToDelete) {
+        delRemoteFileStmt.run(accountId, f.torrentId, f.fileId);
+        delUserWatchedFileStmt.run(accountId, f.torrentId, f.fileId);
+        delThumbnailFileStmt.run(accountId, f.torrentId, f.fileId);
+      }
+
+      // 2. Delete removed torrents and their associated records
+      const delTorrentStmt = db.query(
+        "DELETE FROM torrents WHERE account_id = ? AND torrent_id = ?"
+      );
+      const delWatchedByTorrentStmt = db.query(
+        "DELETE FROM user_watched WHERE account_id = ? AND torrent_id = ?"
+      );
+      const delThumbsByTorrentStmt = db.query(
+        "DELETE FROM file_thumbnails WHERE account_id = ? AND torrent_id = ?"
+      );
+
+      for (const torrentId of torrentsToDelete) {
+        delTorrentStmt.run(accountId, torrentId);
+        delWatchedByTorrentStmt.run(accountId, torrentId);
+        delThumbsByTorrentStmt.run(accountId, torrentId);
+      }
+
+      // 3. Upsert torrents
+      for (const t of torrentsToUpsert) {
+        upsertTorrent(
+          accountId,
+          t.torrentId,
+          t.torrentName,
+          t.torrentHash,
+          t.primaryMediaType,
+          t.primaryTitle,
+          t.tmdbId
+        );
+      }
+
+      // 4. Upsert files
+      for (const f of filesToUpsert) {
+        upsertRemoteFile(
+          accountId,
+          f.torrentId,
+          f.fileId,
+          f.remotePath,
+          f.filename,
+          f.shortName,
+          f.size,
+          f.mimeType,
+          f.torrentHash,
+          f.tmdbId,
+          f.rawTitle,
+          f.rawYear,
+          f.mediaType,
+          f.showTitle,
+          f.seasonNumber,
+          f.episodeNumber,
+          f.episodeEndNumber,
+          f.parsedYear
+        );
+      }
+    });
+
+    tx();
+  } catch (e) {
+    console.error("applySyncDiff error:", e);
+    throw e;
+  }
 }
 
 /**

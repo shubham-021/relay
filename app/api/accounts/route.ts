@@ -13,6 +13,7 @@ import {
 import { encrypt } from "@/lib/crypto";
 import { authenticateTorBox } from "@/lib/torbox";
 import { syncAccount } from "@/lib/sync";
+import { isAccountSyncing, acquireLock, releaseLock } from "@/lib/in-flight";
 
 const db = getDb();
 
@@ -28,7 +29,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const accounts = getAccountsByUserId(userId);
+    const accounts = getAccountsByUserId(userId).map((acc) => ({
+      ...acc,
+      is_syncing: isAccountSyncing(acc.id),
+    }));
     return NextResponse.json({ accounts });
   } catch (error) {
     console.error("Get accounts error:", error);
@@ -97,8 +101,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // Automatically perform initial sync for the newly added account
-    await syncAccount(accountId);
+    // Automatically perform initial sync for the newly added account with account-level lock
+    const accountLockKey = `account:${accountId}:sync`;
+    const accountController = acquireLock(accountLockKey);
+    try {
+      await syncAccount(accountId, accountController?.signal);
+    } finally {
+      if (accountController) {
+        releaseLock(accountLockKey, accountController);
+      }
+    }
     const createdAccount = getAccountById(accountId);
 
     return NextResponse.json({
@@ -138,6 +150,15 @@ export async function DELETE(request: Request) {
     }
 
     const accountId = parseInt(accountIdParam, 10);
+
+    // Prevent deletion while a sync is in progress
+    if (isAccountSyncing(accountId)) {
+      return NextResponse.json(
+        { success: false, error: "Cannot delete account while a sync is in progress." },
+        { status: 409 }
+      );
+    }
+
     const deleted = deleteAccount(session.userId, accountId);
 
     if (!deleted) {

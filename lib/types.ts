@@ -30,6 +30,7 @@ export interface TorBoxAccount {
   is_active: boolean;
   last_synced_at: string | null;
   last_updated_at: string | null;
+  is_syncing?: boolean;
 }
 
 // File item returned by GET /api/files (from DB join)

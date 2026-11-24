@@ -21,6 +21,11 @@ import {
   upsertRemoteFile,
   replaceAccountFiles,
   getCachedTmdbResolution,
+  getExistingRemoteFilesForAccount,
+  getExistingTorrentsForAccount,
+  applySyncDiff,
+  type ExistingRemoteFile,
+  type ExistingTorrent,
   type PendingTorrentRecord,
   type PendingFileRecord,
 } from "./db";
@@ -28,6 +33,7 @@ import { getValidAccessToken, fetchTorrentList } from "./torbox";
 import { MIN_FILE_SIZE_BYTES, MIN_SAMPLE_FILE_SIZE_BYTES } from "./torbox-config";
 import { VIDEO_EXTENSIONS, EXCLUDED_EXTENSIONS } from "./constants";
 import { parseMediaFilename, type ParsedMedia } from "./parser";
+import { cleanupOrphanedThumbnailsFromDisk } from "./thumbnails";
 import {
   searchTmdbMovie,
   searchTmdbTv,
@@ -44,6 +50,31 @@ export function isVideoFile(filename: string, mimetype?: string): boolean {
   // Fallback to extension check
   const ext = filename.split(".").pop()?.toLowerCase() || "";
   return VIDEO_EXTENSIONS.has(ext);
+}
+
+export function isFileEligible(
+  filename: string,
+  size: number,
+  mimetype?: string,
+  skipSizeFilter = false
+): boolean {
+  if (!skipSizeFilter) {
+    const lowerFilename = filename.toLowerCase();
+    const isSample = lowerFilename.includes("sample");
+    const minSize = isSample ? MIN_SAMPLE_FILE_SIZE_BYTES : MIN_FILE_SIZE_BYTES;
+    if (size < minSize) return false;
+  }
+
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  if (EXCLUDED_EXTENSIONS.has(ext)) {
+    return false;
+  }
+
+  if (!isVideoFile(filename, mimetype)) {
+    return false;
+  }
+
+  return true;
 }
 
 export interface MetadataHints {
@@ -183,9 +214,17 @@ async function fetchAndSaveSeasonEpisodes(
   }
 }
 
+export interface SyncOptions {
+  forceFullSync?: boolean;
+  signal?: AbortSignal;
+}
+
 export interface SyncResult {
   success: boolean;
   filesSynced: number;
+  filesAdded?: number;
+  filesModified?: number;
+  filesDeleted?: number;
   error?: string;
 }
 
@@ -210,7 +249,8 @@ export async function buildFileRecord(
     size: number;
     mimetype?: string;
   },
-  options?: BuildOptions
+  options?: BuildOptions,
+  torrentName?: string | null
 ): Promise<{ torrent: PendingTorrentRecord; file: PendingFileRecord; tmdbErrored: boolean } | null> {
   const opts: BuildOptions = options ?? {};
   let tmdbErrored = false;
@@ -286,7 +326,7 @@ export async function buildFileRecord(
     tmdbErrored,
     torrent: {
       torrentId,
-      torrentName: null, // only available at torrent creation, not from TorBox's mylist API
+      torrentName: torrentName || null,
       torrentHash,
       primaryMediaType: mediaType,
       primaryTitle: parsed.title,
@@ -329,9 +369,10 @@ export async function processAndInsertFile(
     size: number;
     mimetype?: string;
   },
-  options?: BuildOptions
+  options?: BuildOptions,
+  torrentName?: string | null
 ): Promise<boolean> {
-  const record = await buildFileRecord(accountId, torrentId, torrentHash, file, options);
+  const record = await buildFileRecord(accountId, torrentId, torrentHash, file, options, torrentName);
   if (!record) return false;
 
   upsertTorrent(
@@ -367,7 +408,15 @@ export async function processAndInsertFile(
   return true;
 }
 
-export async function syncAccount(accountId: number, signal?: AbortSignal): Promise<SyncResult> {
+export async function syncAccount(
+  accountId: number,
+  options?: AbortSignal | SyncOptions
+): Promise<SyncResult> {
+  const opts: SyncOptions =
+    options instanceof AbortSignal ? { signal: options } : (options ?? {});
+  const signal = opts.signal;
+  const forceFullSync = opts.forceFullSync === true;
+
   try {
     // 1. Get a valid access token (auto-refreshes if expired)
     let accessToken: string;
@@ -390,54 +439,185 @@ export async function syncAccount(accountId: number, signal?: AbortSignal): Prom
       return { success: false, filesSynced: 0, error: e.message || "Failed to fetch torrent list" };
     }
 
-    // 3. Process each torrent/file through the shared pipeline WITHOUT touching the DB.
-    //    (Old behavior cleared remote_list_cache up front — an abort or error mid-loop
-    //    left a partially empty library. See LIB_FIX_PLAN.md Phase 4.)
+    // 3. Query existing state from local DB for this account
+    const existingFiles = getExistingRemoteFilesForAccount(accountId);
+    const existingTorrents = getExistingTorrentsForAccount(accountId);
+
+    const existingFilesMap = new Map<string, ExistingRemoteFile>();
+    for (const f of existingFiles) {
+      existingFilesMap.set(`${f.torrent_id}:${f.file_id}`, f);
+    }
+
+    const existingTorrentsMap = new Map<number, ExistingTorrent>();
+    for (const t of existingTorrents) {
+      existingTorrentsMap.set(t.torrent_id, t);
+    }
+
+    const activeFileKeys = new Set<string>();
+    const incomingTorrentsMap = new Map<number, (typeof torrents)[0]>();
+
     const fetchedSeasons = new Set<string>();
     const pendingTorrents = new Map<number, PendingTorrentRecord>();
     const pendingFiles: PendingFileRecord[] = [];
     let hadTmdbErrors = false;
 
-    let filesSynced = 0;
+    let filesAdded = 0;
+    let filesModified = 0;
+    let unchangedFilesCount = 0;
 
+    // Process incoming torrents and files
     for (const torrent of torrents) {
       const torrentId = torrent.id;
       const torrentHash = torrent.hash || null;
+      const torrentName = torrent.name || null;
+      incomingTorrentsMap.set(torrentId, torrent);
 
       if (!torrent.files || !Array.isArray(torrent.files)) continue;
 
       for (const file of torrent.files) {
+        const remotePath = file.name;
+        const filename = file.short_name || remotePath.split("/").pop() || remotePath;
+
+        // Check file eligibility before doing any expensive parsing or network calls
+        if (!isFileEligible(filename, file.size, file.mimetype)) {
+          continue;
+        }
+
+        const fileKey = `${torrentId}:${file.id}`;
+        activeFileKeys.add(fileKey);
+
+        const existing = existingFilesMap.get(fileKey);
+
+        if (existing && !forceFullSync) {
+          // Check if file is unchanged
+          const isUnchanged =
+            existing.remote_path === remotePath &&
+            existing.filename === filename &&
+            (existing.short_name ?? null) === (file.short_name || null) &&
+            existing.size === file.size &&
+            (existing.mime_type ?? "application/octet-stream") === (file.mimetype || "application/octet-stream") &&
+            (existing.torrent_hash ?? null) === torrentHash;
+
+          // Edge case: previously unmatched TV show with tmdb_id IS NULL should be retried automatically
+          const needsTvRetry = isUnchanged && existing.media_type === "tv" && existing.tmdb_id === null;
+
+          if (isUnchanged && !needsTvRetry) {
+            unchangedFilesCount++;
+            // Preserve the torrent row while ensuring torrent_name is updated if previously null
+            const existingTorrent = existingTorrentsMap.get(torrentId);
+            if (!existingTorrent?.torrent_name && torrentName) {
+              if (!pendingTorrents.has(torrentId)) {
+                pendingTorrents.set(torrentId, {
+                  torrentId,
+                  torrentName,
+                  torrentHash,
+                  primaryMediaType: existing.media_type,
+                  primaryTitle: existing.show_title || existing.raw_title,
+                  tmdbId: existing.tmdb_id,
+                });
+              }
+            }
+            continue;
+          }
+
+          if (isUnchanged && needsTvRetry) {
+            // TV retry - re-process with TMDB below
+          } else {
+            filesModified++;
+          }
+        } else {
+          filesAdded++;
+        }
+
+        // Process new, modified, retried, or force-full-synced file
         const record = await buildFileRecord(
           accountId,
           torrentId,
           torrentHash,
           file,
-          { signal, fetchedSeasons, onTmdbError: () => { hadTmdbErrors = true; } }
+          { signal, fetchedSeasons, onTmdbError: () => { hadTmdbErrors = true; } },
+          torrentName
         );
+
         if (record) {
-          filesSynced++;
           pendingTorrents.set(torrentId, record.torrent);
           pendingFiles.push(record.file);
         }
       }
     }
 
-    // 4. Atomic swap: old rows deleted and new rows inserted in one transaction.
-    replaceAccountFiles(
-      accountId,
-      [...pendingTorrents.values()],
-      pendingFiles
-    );
+    // 4. Determine deletions
+    const filesToDelete: Array<{ torrentId: number; fileId: number }> = [];
+    for (const [key, existing] of existingFilesMap) {
+      if (!activeFileKeys.has(key)) {
+        // If the torrent is present in TorBox but has no files array (e.g. downloading/metadata-pending),
+        // do NOT treat existing files as deleted!
+        const incomingTorrent = incomingTorrentsMap.get(existing.torrent_id);
+        const isDownloadingOrEmpty =
+          incomingTorrent && (!incomingTorrent.files || !Array.isArray(incomingTorrent.files) || incomingTorrent.files.length === 0);
 
-    updateAccountSyncTime(accountId);
-
-    // If TMDB hiccups happened, bump last_updated_at so the UI can suggest a resync
-    // for the files that were stored with tmdb_id NULL.
-    if (hadTmdbErrors) {
-      updateAccountUpdatedTime(accountId);
+        if (!isDownloadingOrEmpty) {
+          filesToDelete.push({ torrentId: existing.torrent_id, fileId: existing.file_id });
+        }
+      }
     }
 
-    return { success: true, filesSynced };
+    // Determine torrents to delete:
+    // Torrents completely removed from TorBox OR torrents with no remaining eligible files
+    const torrentsToDelete: number[] = [];
+    for (const [torrentId] of existingTorrentsMap) {
+      if (!incomingTorrentsMap.has(torrentId)) {
+        torrentsToDelete.push(torrentId);
+      } else {
+        const incomingTorrent = incomingTorrentsMap.get(torrentId);
+        const isDownloadingOrEmpty =
+          incomingTorrent && (!incomingTorrent.files || !Array.isArray(incomingTorrent.files) || incomingTorrent.files.length === 0);
+
+        const hasRemainingFiles =
+          Array.from(existingFilesMap.values()).some(
+            (f) =>
+              f.torrent_id === torrentId &&
+              !filesToDelete.some((d) => d.torrentId === f.torrent_id && d.fileId === f.file_id)
+          ) || pendingFiles.some((f) => f.torrentId === torrentId);
+
+        if (!hasRemainingFiles && !isDownloadingOrEmpty) {
+          torrentsToDelete.push(torrentId);
+        }
+      }
+    }
+
+    // 5. Apply diff atomically in SQLite
+    applySyncDiff({
+      accountId,
+      torrentsToUpsert: [...pendingTorrents.values()],
+      filesToUpsert: pendingFiles,
+      filesToDelete,
+      torrentsToDelete,
+    });
+
+    // 6. Update sync time (always updated on completed sync run)
+    updateAccountSyncTime(accountId);
+
+    const hasChanges =
+      pendingFiles.length > 0 ||
+      filesToDelete.length > 0 ||
+      torrentsToDelete.length > 0 ||
+      hadTmdbErrors;
+
+    if (hasChanges) {
+      updateAccountUpdatedTime(accountId);
+      await cleanupOrphanedThumbnailsFromDisk();
+    }
+
+    const totalFilesSynced = unchangedFilesCount + pendingFiles.length;
+
+    return {
+      success: true,
+      filesSynced: totalFilesSynced,
+      filesAdded,
+      filesModified,
+      filesDeleted: filesToDelete.length,
+    };
   } catch (error) {
     console.error("Sync error:", error);
     return { success: false, filesSynced: 0, error: "Sync failed" };

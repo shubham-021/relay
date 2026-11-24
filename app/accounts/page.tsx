@@ -27,6 +27,7 @@ export default function AccountsPage() {
   const [isSyncing, setIsSyncing] = useState<number | null>(null);
   const [isDeleting, setIsDeleting] = useState<number | null>(null);
   const [syncConfirmAccountId, setSyncConfirmAccountId] = useState<number | null>(null);
+  const [forceFullSync, setForceFullSync] = useState(false);
 
   const fetchAccounts = async () => {
     try {
@@ -54,19 +55,22 @@ export default function AccountsPage() {
     isSyncingRef.current = true;
 
     const accountId = syncConfirmAccountId;
+    const force = forceFullSync;
     setSyncConfirmAccountId(null);
+    setForceFullSync(false);
     setIsSyncing(accountId);
     try {
       const res = await fetch("/api/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_id: accountId }),
+        body: JSON.stringify({ account_id: accountId, force_full_sync: force }),
       });
 
       const data = await res.json();
 
       if (res.status === 409) {
         toast.error((data as { error?: string }).error || "A sync is already in progress");
+        fetchAccounts();
         return;
       }
 
@@ -165,21 +169,21 @@ export default function AccountsPage() {
                           variant="outline"
                           size="sm"
                           onClick={() => setSyncConfirmAccountId(account.id)}
-                          disabled={isSyncing !== null}
+                          disabled={isSyncing !== null || account.is_syncing === true}
                           className="gap-1.5 text-xs sm:text-sm"
                         >
-                          {isSyncing === account.id ? (
+                          {isSyncing === account.id || account.is_syncing ? (
                             <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" />
                           ) : (
                             <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                           )}
-                          Sync
+                          {isSyncing === account.id || account.is_syncing ? "Syncing..." : "Sync"}
                         </Button>
                         <Button
                           variant="destructive"
                           size="sm"
                           onClick={() => handleDeleteAccount(account.id)}
-                          disabled={isDeleting !== null || isSyncing !== null}
+                          disabled={isDeleting !== null || isSyncing !== null || account.is_syncing === true}
                           className="gap-1.5 text-xs sm:text-sm"
                         >
                           {isDeleting === account.id ? (
@@ -204,7 +208,15 @@ export default function AccountsPage() {
           onSuccess={handleAddSuccess}
         />
 
-        <Dialog open={syncConfirmAccountId !== null} onOpenChange={(open) => !open && setSyncConfirmAccountId(null)}>
+        <Dialog
+          open={syncConfirmAccountId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSyncConfirmAccountId(null);
+              setForceFullSync(false);
+            }
+          }}
+        >
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
@@ -212,13 +224,29 @@ export default function AccountsPage() {
                 Sync Remote Files?
               </DialogTitle>
               <DialogDescription>
-                This will <span className="font-semibold text-foreground">clear all stored file data</span> for this account and re-fetch everything fresh from TorBox. All files will be re-parsed and metadata will be fetched from TMDB. This may take a moment depending on how many files you have.
+                This will check TorBox for newly added or deleted files and update your library. Unchanged files and manual metadata edits will be preserved.
               </DialogDescription>
             </DialogHeader>
+
+            <div className="py-2">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={forceFullSync}
+                  onChange={(e) => setForceFullSync(e.target.checked)}
+                  className="rounded border-input text-primary focus:ring-primary h-4 w-4"
+                />
+                Force re-fetch all metadata from TMDB (resets manual edits)
+              </label>
+            </div>
+
             <DialogFooter className="gap-2 sm:gap-0">
               <Button
                 variant="outline"
-                onClick={() => setSyncConfirmAccountId(null)}
+                onClick={() => {
+                  setSyncConfirmAccountId(null);
+                  setForceFullSync(false);
+                }}
                 className="rounded-xl cursor-pointer"
               >
                 Cancel
@@ -227,7 +255,7 @@ export default function AccountsPage() {
                 onClick={handleSyncAccount}
                 className="rounded-xl cursor-pointer"
               >
-                Yes, Sync Now
+                {forceFullSync ? "Full Resync" : "Sync Now"}
               </Button>
             </DialogFooter>
           </DialogContent>

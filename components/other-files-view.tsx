@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
 import { buildPlayerURL } from "@/lib/players";
+import { safeParseJson, cleanErrorMessage } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { memo, useCallback, useEffect, useState } from "react";
 import { AccountBadge } from "@/components/account-badge";
@@ -50,19 +51,20 @@ interface OtherFilesViewProps {
 
 const LOCAL_DAEMON_PLAYERS = ["mpv", "vlc", "iina"];
 
-async function fetchCdnLink(torrentId: number, fileId: number, accountId: number): Promise<string | null> {
+async function fetchCdnLink(torrentId: number, fileId: number, accountId: number): Promise<{ url: string | null; error: string | null }> {
   try {
     const res = await fetch("/api/cdn-link", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ torrent_id: torrentId, file_id: fileId, account_id: accountId }),
     });
-    const data = await res.json();
-    if (!res.ok || !data.url) throw new Error(data.error || "Failed to get CDN link");
-    return data.url;
+    const { ok, data, error } = await safeParseJson<{ url?: string; error?: string }>(res, "Failed to get CDN link");
+    if (!ok || !data?.url) {
+      return { url: null, error: cleanErrorMessage(error || "Failed to get CDN link") };
+    }
+    return { url: data.url, error: null };
   } catch (e: any) {
-    toast.error(e.message || "Failed to get CDN link");
-    return null;
+    return { url: null, error: cleanErrorMessage(e?.message || "Network error. Please check your connection.") };
   }
 }
 
@@ -80,19 +82,25 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
   const account = accounts.find(a => a.id === file.account_id);
 
   const handleCopyLink = async () => {
-    const cdnUrl = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
+    if (!cdnUrl) {
+      toast.error("Failed to copy link", { description: error || "Unable to generate CDN link" });
+      return;
+    }
     try {
       await navigator.clipboard.writeText(cdnUrl);
       toast.success("Link copied");
-    } catch {
-      toast.error("Failed to copy link");
+    } catch (e: any) {
+      toast.error("Failed to copy link", { description: cleanErrorMessage(e?.message || "Clipboard write failed") });
     }
   };
 
   const handleStream = async () => {
-    const cdnUrl = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
+    if (!cdnUrl) {
+      toast.error("Stream failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
 
     if (LOCAL_DAEMON_PLAYERS.includes(playerProtocol)) {
       try {
@@ -101,16 +109,20 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ player: playerProtocol, url: cdnUrl }),
         });
-        if (daemonRes.ok) {
+        const { ok, error: daemonErr } = await safeParseJson(daemonRes, "Daemon returned error status");
+        if (ok) {
           toast.success(`Launched ${playerProtocol.toUpperCase()} via Local Daemon`, {
             description: "CDN stream active."
           });
           return;
         }
-        throw new Error("Daemon returned error status");
-      } catch {
+        throw new Error(daemonErr || "Daemon returned error status");
+      } catch (err: any) {
+        const isConn = !err.message || /fetch|network|refused/i.test(err.message);
         toast.error("Local daemon connection failed", {
-          description: "Ensure Relay Aemond is running on port 9070 on your machine."
+          description: isConn
+            ? "Ensure Relay Aemond is running on port 9070 on your machine."
+            : cleanErrorMessage(err.message),
         });
         return;
       }
@@ -129,16 +141,22 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
   };
 
   const handleDownload = async () => {
-    const cdnUrl = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
+    if (!cdnUrl) {
+      toast.error("Download failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
     window.open(cdnUrl, "_blank");
     toast.success("Download started");
   };
 
   const handleSyncplay = async () => {
     if (!LOCAL_DAEMON_PLAYERS.includes(playerProtocol)) return;
-    const cdnUrl = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(file.torrent_id, file.file_id, file.account_id);
+    if (!cdnUrl) {
+      toast.error("Syncplay launch failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
 
     try {
       const daemonRes = await fetch("http://localhost:9070/syncplay", {
@@ -146,17 +164,20 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ player: playerProtocol, url: cdnUrl }),
       });
-      if (daemonRes.ok) {
-        const resData = await daemonRes.json();
+      const { ok, data: resData, error: daemonErr } = await safeParseJson(daemonRes, "Daemon returned error");
+      if (ok && resData) {
         toast.success(`Syncplay launched via ${playerProtocol.toUpperCase()}`, {
           description: `Joined room: ${resData.room || "unknown"}`,
         });
         return;
       }
-      throw new Error("Daemon returned error");
+      throw new Error(daemonErr || "Daemon returned error");
     } catch (e: any) {
+      const isConn = !e.message || /fetch|network|refused/i.test(e.message);
       toast.error("Syncplay launch failed", {
-        description: e.message || "Ensure Aemond is running and syncplay.conf is configured.",
+        description: isConn
+          ? "Ensure Aemond is running and syncplay.conf is configured."
+          : cleanErrorMessage(e.message),
       });
     }
   };
@@ -165,8 +186,8 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
     setIsFetchingInfo(true);
     try {
       const res = await fetch(`/api/torrent/info?account_id=${file.account_id}&torrent_id=${file.torrent_id}`);
-      if (res.ok) {
-        const info = await res.json();
+      const { ok, data: info } = await safeParseJson<{ primary_title: string | null; primary_media_type: string; torrent_name: string | null }>(res);
+      if (ok && info) {
         setTorrentInfo(info);
       } else {
         setTorrentInfo(null);
@@ -187,13 +208,13 @@ function FileCard({ file, playerProtocol, accounts, compactActions, onDeleted }:
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ torrent_id: file.torrent_id, account_id: file.account_id }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to delete torrent");
+      const { ok, error } = await safeParseJson(res, "Failed to delete torrent");
+      if (!ok) throw new Error(error || "Failed to delete torrent");
       toast.success("File deleted", { description: file.filename });
       onDeleted(file.id);
       window.dispatchEvent(new CustomEvent("torrent-files-updated"));
     } catch (e: any) {
-      toast.error(e.message || "Failed to delete torrent");
+      toast.error("Failed to delete file", { description: cleanErrorMessage(e?.message) });
     } finally {
       setIsDeleting(false);
       setShowDeleteDialog(false);
@@ -405,8 +426,8 @@ export const OtherFilesView = memo(function OtherFilesView({ files, isLoading, s
       const res = await fetch("/api/thumbnails/generate", {
         method: "POST",
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to generate thumbnails");
+      const { ok, data, error } = await safeParseJson(res, "Failed to generate thumbnails");
+      if (!ok || !data) throw new Error(error || "Failed to generate thumbnails");
       if (data.generated > 0) {
         toast.success(`Generated thumbnails for ${data.generated} file${data.generated !== 1 ? "s" : ""}`);
         window.location.reload();
@@ -416,7 +437,7 @@ export const OtherFilesView = memo(function OtherFilesView({ files, isLoading, s
         toast.info("No files need thumbnail generation");
       }
     } catch (e: any) {
-      toast.error(e.message || "Failed to generate thumbnails");
+      toast.error("Thumbnail generation failed", { description: cleanErrorMessage(e?.message) });
     } finally {
       setGenerating(false);
     }

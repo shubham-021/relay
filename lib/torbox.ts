@@ -67,48 +67,6 @@ export interface TorBoxCdnResponse {
   data: string; // CDN URL
 }
 
-// Retry Helper
-
-async function withRetry<T>(
-  fn: (signal?: AbortSignal) => Promise<T>,
-  retries = 3,
-  delay = 1000,
-  signal?: AbortSignal
-): Promise<T> {
-
-  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-
-  try {
-    return await fn();
-  } catch (error: unknown) {
-    const status =
-      error instanceof Error && "status" in error
-        ? (error as { status: number }).status
-        : undefined;
-
-    if (status === 429 && retries > 0) {
-      console.warn(
-        `TorBox API 429 rate limit. Retrying in ${delay}ms... (${retries} left)`
-      );
-      const jitter = Math.random() * 200;
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, delay + jitter);
-        signal?.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            reject(new DOMException("Aborted", "AbortError"));
-          },
-          { once: true }
-        );
-      });
-
-      return withRetry(fn, retries - 1, delay * 2, signal);
-    }
-    throw error;
-  }
-}
-
 // Authentication 
 
 // Authenticate with TorBox using email and password.
@@ -241,29 +199,42 @@ export async function fetchTorrentList(
   accessToken: string,
   signal?: AbortSignal
 ): Promise<TorBoxTorrent[]> {
-  return withRetry(async (sig) => {
-    const res = await fetch(TORBOX_ENDPOINTS.TORRENTS_MYLIST, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      cache: "no-store",
-      signal: sig
-    });
+  const res = await fetch(TORBOX_ENDPOINTS.TORRENTS_MYLIST, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    cache: "no-store",
+    signal,
+  });
 
-    if (!res.ok) {
-      const err = new Error(`Failed to fetch torrent list (${res.status})`);
-      (err as any).status = res.status;
-      throw err;
+  if (!res.ok) {
+    let errorMsg = res.status === 429
+      ? "TorBox rate limit reached. Please wait a moment."
+      : `Failed to fetch torrent list (${res.status})`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.detail) errorMsg = String(errJson.detail);
+      else if (errJson?.error) errorMsg = String(errJson.error);
+    } catch {
+      // Response was not JSON
     }
+    const err = new Error(errorMsg);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-    const body: TorBoxListResponse = await res.json();
+  let body: TorBoxListResponse;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`TorBox returned invalid response (${res.status})`);
+  }
 
-    if (!body.success) {
-      throw new Error(body.error || "TorBox API returned unsuccessful response");
-    }
+  if (!body.success) {
+    throw new Error(body.error || "TorBox API returned unsuccessful response");
+  }
 
-    return body.data || [];
-  }, 3, 1000, signal);
+  return body.data || [];
 }
 
 // CDN Link Generation
@@ -273,31 +244,49 @@ export async function requestCdnLink(
   accessToken: string,
   signal?: AbortSignal
 ): Promise<string> {
-  return withRetry(async (sig) => {
-    const url = new URL(TORBOX_ENDPOINTS.TORRENTS_REQUEST_DL);
-    url.searchParams.set("torrent_id", String(torrentId));
-    url.searchParams.set("file_id", String(fileId));
-    url.searchParams.set("token", accessToken);
+  const url = new URL(TORBOX_ENDPOINTS.TORRENTS_REQUEST_DL);
+  url.searchParams.set("torrent_id", String(torrentId));
+  url.searchParams.set("file_id", String(fileId));
+  url.searchParams.set("token", accessToken);
 
-    const res = await fetch(url.toString(), {
-      cache: "no-store",
-      signal: sig
-    });
+  const res = await fetch(url.toString(), {
+    cache: "no-store",
+    signal,
+  });
 
-    if (!res.ok) {
-      const err = new Error(`Failed to request CDN link (${res.status})`);
-      (err as any).status = res.status;
-      throw err;
+  if (!res.ok) {
+    let errorMsg = res.status === 429
+      ? "TorBox rate limit reached. Please wait a moment."
+      : `Failed to request CDN link (${res.status})`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.error === "DATABASE_ERROR") {
+        errorMsg = "Torrent not found or removed on TorBox";
+      } else if (errJson?.detail) {
+        errorMsg = String(errJson.detail);
+      } else if (errJson?.error) {
+        errorMsg = String(errJson.error);
+      }
+    } catch {
+      // Response was not JSON
     }
+    const err = new Error(errorMsg);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-    const body: TorBoxCdnResponse = await res.json();
+  let body: TorBoxCdnResponse;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`TorBox returned invalid response (${res.status})`);
+  }
 
-    if (!body.success || !body.data) {
-      throw new Error(body.error || "TorBox API returned no CDN URL");
-    }
+  if (!body.success || !body.data) {
+    throw new Error(body.error || body.detail || "TorBox API returned no CDN URL");
+  }
 
-    return body.data;
-  }, 3, 1000, signal);
+  return body.data;
 }
 
 // Torrent Cache Check
@@ -331,28 +320,40 @@ export async function checkTorrentCached(
   accessToken: string,
   signal?: AbortSignal
 ): Promise<CheckCachedResponse> {
-  return withRetry(async (sig) => {
-    const url = new URL(TORBOX_ENDPOINTS.TORRENTS_CHECK_CACHED);
-    url.searchParams.set("hash", hash);
-    url.searchParams.set("format", "object");
-    url.searchParams.set("list_files", "true");
+  const url = new URL(TORBOX_ENDPOINTS.TORRENTS_CHECK_CACHED);
+  url.searchParams.set("hash", hash);
+  url.searchParams.set("format", "object");
+  url.searchParams.set("list_files", "true");
 
-    const res = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      cache: "no-store",
-      signal: sig
-    });
+  const res = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    cache: "no-store",
+    signal,
+  });
 
-    if (!res.ok) {
-      const err = new Error(`Failed to check torrent cache (${res.status})`);
-      (err as any).status = res.status;
-      throw err;
+  if (!res.ok) {
+    let errorMsg = res.status === 429
+      ? "TorBox rate limit reached. Please wait a moment."
+      : `Failed to check torrent cache (${res.status})`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.detail) errorMsg = String(errJson.detail);
+      else if (errJson?.error) errorMsg = String(errJson.error);
+    } catch {
+      // not JSON
     }
+    const err = new Error(errorMsg);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-    return res.json();
-  }, 3, 1000, signal);
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`TorBox returned invalid response (${res.status})`);
+  }
 }
 
 /** Check if multiple torrent hashes are cached on TorBox (bulk). */
@@ -361,29 +362,41 @@ export async function checkTorrentsCachedBulk(
   accessToken: string,
   signal?: AbortSignal
 ): Promise<CheckCachedResponse> {
-  return withRetry(async (sig) => {
-    const url = new URL(TORBOX_ENDPOINTS.TORRENTS_CHECK_CACHED);
-    url.searchParams.set("format", "object");
-    url.searchParams.set("list_files", "true");
+  const url = new URL(TORBOX_ENDPOINTS.TORRENTS_CHECK_CACHED);
+  url.searchParams.set("format", "object");
+  url.searchParams.set("list_files", "true");
 
-    const res = await fetch(url.toString(), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ hashes }),
-      signal: sig
-    });
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ hashes }),
+    signal,
+  });
 
-    if (!res.ok) {
-      const err = new Error(`Failed to check torrent cache (${res.status})`);
-      (err as any).status = res.status;
-      throw err;
+  if (!res.ok) {
+    let errorMsg = res.status === 429
+      ? "TorBox rate limit reached. Please wait a moment."
+      : `Failed to check torrent cache (${res.status})`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.detail) errorMsg = String(errJson.detail);
+      else if (errJson?.error) errorMsg = String(errJson.error);
+    } catch {
+      // not JSON
     }
+    const err = new Error(errorMsg);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-    return res.json();
-  }, 3, 1000, signal);
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`TorBox returned invalid response (${res.status})`);
+  }
 }
 
 // Torrent Creation
@@ -406,30 +419,42 @@ export async function createTorrent(
   addOnlyIfCached: boolean = true,
   signal?: AbortSignal
 ): Promise<CreateTorrentResponse> {
-  return withRetry(async (sig) => {
-    const formData = new FormData();
-    formData.append("magnet", magnetLink);
-    if (addOnlyIfCached) {
-      formData.append("add_only_if_cached", "true");
+  const formData = new FormData();
+  formData.append("magnet", magnetLink);
+  if (addOnlyIfCached) {
+    formData.append("add_only_if_cached", "true");
+  }
+
+  const res = await fetch(TORBOX_ENDPOINTS.TORRENTS_CREATE, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: formData,
+    signal,
+  });
+
+  if (!res.ok) {
+    let errorMsg = res.status === 429
+      ? "TorBox rate limit reached. Please wait a moment."
+      : `Failed to create torrent (${res.status})`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.detail) errorMsg = String(errJson.detail);
+      else if (errJson?.error) errorMsg = String(errJson.error);
+    } catch {
+      // not JSON
     }
+    const err = new Error(errorMsg);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-    const res = await fetch(TORBOX_ENDPOINTS.TORRENTS_CREATE, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: formData,
-      signal: sig
-    });
-
-    if (!res.ok) {
-      const err = new Error(`Failed to create torrent (${res.status})`);
-      (err as any).status = res.status;
-      throw err;
-    }
-
-    return res.json();
-  }, 3, 1000, signal);
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`TorBox returned invalid response (${res.status})`);
+  }
 }
 
 // Torrent Deletion
@@ -447,26 +472,50 @@ export async function deleteTorrent(
   accessToken: string,
   signal?: AbortSignal
 ): Promise<ControlTorrentResponse> {
-  return withRetry(async (sig) => {
-    const res = await fetch(TORBOX_ENDPOINTS.TORRENTS_CONTROL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        torrent_id: torrentId,
-        operation: "delete",
-      }),
-      signal: sig
-    });
+  const res = await fetch(TORBOX_ENDPOINTS.TORRENTS_CONTROL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      torrent_id: torrentId,
+      operation: "delete",
+    }),
+    signal,
+  });
 
-    if (!res.ok) {
-      const err = new Error(`Failed to delete torrent (${res.status})`);
-      (err as any).status = res.status;
-      throw err;
+  if (!res.ok) {
+    let errorMsg = res.status === 429
+      ? "TorBox rate limit reached. Please wait a moment."
+      : `Failed to delete torrent (${res.status})`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.error === "DATABASE_ERROR") {
+        errorMsg = "Torrent not found or already deleted on TorBox";
+      } else if (errJson?.detail) {
+        errorMsg = String(errJson.detail);
+      } else if (errJson?.error) {
+        errorMsg = String(errJson.error);
+      }
+    } catch {
+      // Response was not JSON
     }
+    const err = new Error(errorMsg);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-    return res.json();
-  }, 3, 1000, signal);
+  let body: ControlTorrentResponse;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`TorBox returned invalid response (${res.status})`);
+  }
+
+  if (body.success === false) {
+    throw new Error(body.error || body.detail || "Failed to delete torrent on TorBox");
+  }
+
+  return body;
 }

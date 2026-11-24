@@ -60,14 +60,20 @@ export async function DELETE(req: Request) {
         deleted++;
       } catch (e: any) {
         console.error(`Failed to delete torrent ${tid}:`, e);
-        errors.push(`Torrent ${tid}: ${e.message || "Unknown error"}`);
+        // If the torrent was already removed or not found on TorBox, clean it up locally
+        if (e.message && /not found|already deleted|DATABASE_ERROR/i.test(e.message)) {
+          deleteRemoteFilesByTorrent(account_id, tid);
+          deleted++;
+        } else {
+          errors.push(`Torrent ${tid}: ${e.message || "Unknown error"}`);
+        }
       }
     }
 
     if (deleted === 0 && errors.length > 0) {
       return NextResponse.json(
-        { error: "Failed to delete torrent(s)", details: errors },
-        { status: 502 }
+        { error: errors.join("; ") || "Failed to delete torrent(s)", details: errors },
+        { status: 400 }
       );
     }
 

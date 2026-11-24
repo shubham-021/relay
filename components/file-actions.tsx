@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useState, useCallback, useRef } from "react";
 import { LOCAL_DAEMON_PLAYERS } from "@/lib/constants";
 import { launchPlayback } from "@/lib/client-play";
+import { safeParseJson, cleanErrorMessage } from "@/lib/utils";
 
 interface FileActionsProps {
   torrentId: number;
@@ -38,7 +39,7 @@ export function FileActions({
    */
   const cdnInFlight = useRef(false);
 
-  const getCdnLink = useCallback(async (): Promise<string | null> => {
+  const getCdnLink = useCallback(async (): Promise<{ url: string | null; error: string | null }> => {
     try {
       const res = await fetch("/api/cdn-link", {
         method: "POST",
@@ -50,21 +51,22 @@ export function FileActions({
         }),
       });
 
-      const data = await res.json();
+      const { ok, data, error } = await safeParseJson<{ url?: string; error?: string }>(
+        res,
+        "Failed to get CDN link"
+      );
 
-      if (!res.ok || !data.url) {
+      if (!ok || !data?.url) {
         const message =
           res.status === 409
-            ? (data as { error?: string }).error || "A CDN request is already in progress"
-            : (data as { error?: string }).error || "Failed to get CDN link";
-        toast.error(message);
-        return null;
+            ? "A CDN request is already in progress"
+            : error || "Failed to get CDN link";
+        return { url: null, error: cleanErrorMessage(message) };
       }
 
-      return data.url;
-    } catch {
-      toast.error("Network error");
-      return null;
+      return { url: data.url, error: null };
+    } catch (err: any) {
+      return { url: null, error: cleanErrorMessage(err?.message || "Network error. Please check your connection.") };
     }
   }, [torrentId, fileId, accountId]);
 
@@ -73,12 +75,15 @@ export function FileActions({
     cdnInFlight.current = true;
     setIsCopying(true);
     try {
-      const cdnUrl = await getCdnLink();
-      if (!cdnUrl) return;
+      const { url: cdnUrl, error } = await getCdnLink();
+      if (!cdnUrl) {
+        toast.error("Failed to copy link", { description: error || "Unable to generate CDN link" });
+        return;
+      }
       await navigator.clipboard.writeText(cdnUrl);
       toast.success("CDN link copied to clipboard");
-    } catch {
-      toast.error("Failed to copy link");
+    } catch (err: any) {
+      toast.error("Failed to copy link", { description: cleanErrorMessage(err?.message || "Clipboard write failed") });
     } finally {
       cdnInFlight.current = false;
       setIsCopying(false);
@@ -94,8 +99,11 @@ export function FileActions({
     cdnInFlight.current = true;
     setIsSyncplaying(true);
     try {
-      const cdnUrl = await getCdnLink();
-      if (!cdnUrl) return;
+      const { url: cdnUrl, error } = await getCdnLink();
+      if (!cdnUrl) {
+        toast.error("Syncplay launch failed", { description: error || "Unable to generate CDN link" });
+        return;
+      }
 
       try {
         const daemonRes = await fetch("http://localhost:9070/syncplay", {
@@ -104,22 +112,25 @@ export function FileActions({
           body: JSON.stringify({ player: playerProtocol, url: cdnUrl }),
         });
 
-        if (daemonRes.ok) {
-          const data = await daemonRes.json();
+        const { ok, data, error: daemonErr } = await safeParseJson(daemonRes, "Daemon returned error status");
+
+        if (ok && data) {
           toast.success(`Syncplay launched via ${playerProtocol.toUpperCase()}`, {
             description: `Joined room: ${data.room || "unknown"}`,
           });
           return;
         }
-        const errData = await daemonRes.json().catch(() => ({}));
-        throw new Error((errData as { error?: string }).error || "Daemon returned error status");
+        throw new Error(daemonErr || "Daemon returned error status");
       } catch (e: any) {
+        const isConn = !e.message || /fetch|network|refused/i.test(e.message);
         toast.error("Syncplay launch failed", {
-          description: e.message || "Ensure Aemond is running and syncplay.conf is configured.",
+          description: isConn
+            ? "Ensure Relay Aemond is running and syncplay.conf is configured."
+            : cleanErrorMessage(e.message),
         });
       }
-    } catch {
-      toast.error("Failed to start Syncplay");
+    } catch (err: any) {
+      toast.error("Failed to start Syncplay", { description: cleanErrorMessage(err?.message) });
     } finally {
       cdnInFlight.current = false;
       setIsSyncplaying(false);
@@ -143,10 +154,15 @@ export function FileActions({
     cdnInFlight.current = true;
     setIsDownloading(true);
     try {
-      const cdnUrl = await getCdnLink();
-      if (!cdnUrl) return;
+      const { url: cdnUrl, error } = await getCdnLink();
+      if (!cdnUrl) {
+        toast.error("Download failed", { description: error || "Unable to generate CDN link" });
+        return;
+      }
       window.open(cdnUrl, "_blank");
       toast.success("Download started", { description: fileName });
+    } catch (err: any) {
+      toast.error("Download failed", { description: cleanErrorMessage(err?.message) });
     } finally {
       cdnInFlight.current = false;
       setIsDownloading(false);

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
 import { launchPlayback } from "@/lib/client-play";
+import { safeParseJson, cleanErrorMessage } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useFileStore } from "@/lib/store";
 import { AccountBadge } from "@/components/account-badge";
@@ -71,19 +72,20 @@ function useCompactActions() {
   return compact;
 }
 
-async function fetchCdnLink(torrentId: number, fileId: number, accountId: number): Promise<string | null> {
+async function fetchCdnLink(torrentId: number, fileId: number, accountId: number): Promise<{ url: string | null; error: string | null }> {
   try {
     const res = await fetch("/api/cdn-link", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ torrent_id: torrentId, file_id: fileId, account_id: accountId }),
     });
-    const data = await res.json();
-    if (!res.ok || !data.url) throw new Error(data.error || "Failed to get CDN link");
-    return data.url;
+    const { ok, data, error } = await safeParseJson<{ url?: string; error?: string }>(res, "Failed to get CDN link");
+    if (!ok || !data?.url) {
+      return { url: null, error: cleanErrorMessage(error || "Failed to get CDN link") };
+    }
+    return { url: data.url, error: null };
   } catch (e: any) {
-    toast.error(e.message || "Failed to get CDN link");
-    return null;
+    return { url: null, error: cleanErrorMessage(e?.message || "Network error. Please check your connection.") };
   }
 }
 
@@ -117,8 +119,8 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
         const url = `/api/library/tv/${encodeURIComponent(showTitle)}`;
 
         const res = await fetch(url, forceRefresh ? { cache: "no-store" } : undefined);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to load show detail");
+        const { ok, data, error: err } = await safeParseJson(res, "Failed to load show detail");
+        if (!ok || !data) throw new Error(err || "Failed to load show detail");
 
         setShowInfo(data.show);
         setSeasons(data.seasons || []);
@@ -196,14 +198,17 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
   }, [seasons, selectedTorrents]);
 
   const handleCopyLink = useCallback(async (ep: Episode) => {
-    const cdnUrl = await fetchCdnLink(ep.torrent_id, ep.file_id, ep.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(ep.torrent_id, ep.file_id, ep.account_id);
+    if (!cdnUrl) {
+      toast.error("Failed to copy link", { description: error || "Unable to generate CDN link" });
+      return;
+    }
 
     try {
       await navigator.clipboard.writeText(cdnUrl);
       toast.success("Stream link copied");
-    } catch {
-      toast.error("Failed to copy link");
+    } catch (e: any) {
+      toast.error("Failed to copy link", { description: cleanErrorMessage(e?.message || "Clipboard write failed") });
     }
   }, []);
 
@@ -217,16 +222,22 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
   }, [playerProtocol]);
 
   const handleDownload = useCallback(async (ep: Episode) => {
-    const cdnUrl = await fetchCdnLink(ep.torrent_id, ep.file_id, ep.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(ep.torrent_id, ep.file_id, ep.account_id);
+    if (!cdnUrl) {
+      toast.error("Download failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
     window.open(cdnUrl, "_blank");
     toast.success("Download started");
   }, []);
 
   const handleSyncplay = useCallback(async (ep: Episode) => {
     if (!LOCAL_DAEMON_PLAYERS.includes(playerProtocol)) return;
-    const cdnUrl = await fetchCdnLink(ep.torrent_id, ep.file_id, ep.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(ep.torrent_id, ep.file_id, ep.account_id);
+    if (!cdnUrl) {
+      toast.error("Syncplay launch failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
 
     try {
       const daemonRes = await fetch("http://localhost:9070/syncplay", {
@@ -235,17 +246,21 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
         body: JSON.stringify({ player: playerProtocol, url: cdnUrl }),
       });
 
-      if (daemonRes.ok) {
-        const resData = await daemonRes.json();
+      const { ok, data: resData, error: daemonErr } = await safeParseJson(daemonRes, "Daemon returned error");
+
+      if (ok && resData) {
         toast.success(`Syncplay launched via ${playerProtocol.toUpperCase()}`, {
           description: `Joined room: ${resData.room || "unknown"}`,
         });
         return;
       }
-      throw new Error("Daemon returned error");
+      throw new Error(daemonErr || "Daemon returned error");
     } catch (e: any) {
+      const isConn = !e.message || /fetch|network|refused/i.test(e.message);
       toast.error("Syncplay launch failed", {
-        description: e.message || "Ensure Aemond is running and syncplay.conf is configured.",
+        description: isConn
+          ? "Ensure Aemond is running and syncplay.conf is configured."
+          : cleanErrorMessage(e.message),
       });
     }
   }, [playerProtocol]);
@@ -282,8 +297,8 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ torrent_ids: Array.from(selectedTorrents), account_id: showAccountId }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to delete show");
+      const { ok, error } = await safeParseJson(res, "Failed to delete show");
+      if (!ok) throw new Error(error || "Failed to delete show");
       toast.success("Torrents deleted");
       window.dispatchEvent(new CustomEvent("torrent-files-updated"));
       
@@ -295,7 +310,7 @@ export function TvShowDetail({ showTitle, playerProtocol, onBack }: TvShowDetail
         loadShowDetail(true);
       }
     } catch (e: any) {
-      toast.error(e.message || "Failed to delete show");
+      toast.error("Failed to delete show", { description: cleanErrorMessage(e?.message) });
     } finally {
       setIsDeletingShow(false);
       setShowDeleteDialog(false);

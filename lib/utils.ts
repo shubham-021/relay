@@ -141,3 +141,126 @@ export function buildBreadcrumbs(
 
   return breadcrumbs;
 }
+
+export interface SafeJsonResponse<T = Record<string, any>> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  error: string | null;
+}
+
+/**
+ * Normalizes error messages into clean, concise descriptions suitable for toasts.
+ * Strips technical noise, HTML tags, and provides friendly summaries.
+ */
+export function cleanErrorMessage(msg: unknown): string {
+  if (!msg) return "An unexpected error occurred";
+  let str =
+    typeof msg === "string"
+      ? msg
+      : (msg as { message?: string })?.message || String(msg);
+
+  // Strip HTML tags
+  str = str.replace(/<[^>]*>/g, "").trim();
+
+  // Strip "Error: " prefixes
+  str = str.replace(/^(Error:\s*)+/i, "");
+
+  // Normalize specific Torbox and network errors
+  if (/database_error/i.test(str)) {
+    return "Torrent not found or removed on TorBox";
+  }
+  if (/json parse|unexpected token|syntaxerror/i.test(str)) {
+    return "Invalid response from server";
+  }
+  if (/failed to fetch|network error|econnrefused/i.test(str)) {
+    return "Network connection failed";
+  }
+
+  // Shorten if overly long (keep <= 120 chars for toast readability)
+  if (str.length > 120) {
+    str = str.slice(0, 117) + "...";
+  }
+
+  return str;
+}
+
+/**
+ * Safely parses a fetch Response as JSON without ever throwing a SyntaxError.
+ * Handles HTML error pages (e.g. Cloudflare / Nginx 502), empty bodies, and plain text.
+ * Guarantees that neither .json() nor .text() exceptions break caller flows.
+ */
+export async function safeParseJson<T = Record<string, any>>(
+  res: Response,
+  fallbackMessage = "Request failed"
+): Promise<SafeJsonResponse<T>> {
+  const status = res.status;
+  const contentType = res.headers.get("content-type") || "";
+
+  let rawText = "";
+  try {
+    rawText = await res.text();
+  } catch {
+    return {
+      ok: false,
+      status,
+      data: null,
+      error: `${fallbackMessage} (${status})`,
+    };
+  }
+
+  const trimmed = rawText.trim();
+
+  // Handle empty body
+  if (!trimmed) {
+    return {
+      ok: res.ok,
+      status,
+      data: null,
+      error: res.ok ? null : `${fallbackMessage} (${status})`,
+    };
+  }
+
+  // Try parsing JSON if content-type indicates JSON or if it looks like JSON
+  if (contentType.includes("application/json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as T;
+      if (!res.ok) {
+        const parsedRecord = parsed as Record<string, unknown> | null;
+        const details = parsedRecord?.details;
+        const errorDetail =
+          parsedRecord?.error ||
+          parsedRecord?.detail ||
+          parsedRecord?.message ||
+          (Array.isArray(details) ? details.join("; ") : null) ||
+          `${fallbackMessage} (${status})`;
+        return { ok: false, status, data: parsed, error: cleanErrorMessage(String(errorDetail)) };
+      }
+      return { ok: true, status, data: parsed, error: null };
+    } catch {
+      // Body failed JSON.parse despite header/appearance
+    }
+  }
+
+  // Handle non-JSON response (e.g. HTML error page or plain text)
+  if (!res.ok) {
+    const isHtml = contentType.includes("text/html") || trimmed.includes("<html") || trimmed.includes("<!DOCTYPE");
+    let errorMsg = `${fallbackMessage} (${status})`;
+
+    if (isHtml) {
+      const titleMatch = trimmed.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch?.[1]?.trim()) {
+        errorMsg = `${titleMatch[1].trim()} (${status})`;
+      } else {
+        errorMsg = `Server error (${status})`;
+      }
+    } else if (trimmed.length < 150) {
+      errorMsg = trimmed;
+    }
+
+    return { ok: false, status, data: null, error: cleanErrorMessage(errorMsg) };
+  }
+
+  return { ok: true, status, data: null, error: null };
+}
+

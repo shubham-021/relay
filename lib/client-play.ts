@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { buildPlayerURL } from "@/lib/players";
 import { LOCAL_DAEMON_PLAYERS } from "@/lib/constants";
+import { safeParseJson, cleanErrorMessage } from "@/lib/utils";
 
 /**
  * Shared playback orchestration used by FileActions and MoviesGrid.
@@ -30,19 +31,24 @@ export async function launchPlayback(params: {
         account_id: accountId,
       }),
     });
-    const data = await res.json();
-    if (!res.ok || !data.url) {
+    const { ok, data, error } = await safeParseJson<{ url?: string; playToken?: string; error?: string }>(
+      res,
+      "Failed to get CDN link"
+    );
+
+    if (!ok || !data?.url || !data?.playToken) {
       const message = res.status === 409
-        ? (data as { error?: string }).error || "A CDN request is already in progress"
-        : (data as { error?: string }).error || "Failed to get CDN link";
-      toast.error(message);
+        ? "A CDN request is already in progress"
+        : error || "Failed to get CDN link";
+      toast.error("Playback failed", { description: cleanErrorMessage(message) });
       return { ok: false, error: message };
     }
     cdnUrl = data.url;
     playToken = data.playToken;
-  } catch {
-    toast.error("Network error");
-    return { ok: false, error: "Network error" };
+  } catch (err: any) {
+    const desc = cleanErrorMessage(err?.message || "Network connection error");
+    toast.error("Playback failed", { description: desc });
+    return { ok: false, error: desc };
   }
 
   // 2. Resume state (best-effort; defaults to beginning on any failure)
@@ -55,18 +61,20 @@ export async function launchPlayback(params: {
     });
     const res = await fetch(`/api/progress?${query.toString()}`);
     if (res.ok) {
-      const progress = await res.json();
-      const position = Number(progress.position ?? 0);
-      const duration = progress.duration == null ? null : Number(progress.duration);
-      const completed = Boolean(progress.completed);
-      if (
-        !completed &&
-        position > 0 &&
-        duration != null &&
-        duration > 0 &&
-        position < duration - 10
-      ) {
-        startTime = String(Math.floor(position));
+      const { data: progress } = await safeParseJson(res);
+      if (progress) {
+        const position = Number(progress.position ?? 0);
+        const duration = progress.duration == null ? null : Number(progress.duration);
+        const completed = Boolean(progress.completed);
+        if (
+          !completed &&
+          position > 0 &&
+          duration != null &&
+          duration > 0 &&
+          position < duration - 10
+        ) {
+          startTime = String(Math.floor(position));
+        }
       }
     }
   } catch {
@@ -91,16 +99,21 @@ export async function launchPlayback(params: {
         }),
       });
 
-      if (daemonRes.ok) {
+      const { ok: daemonOk, error: daemonErr } = await safeParseJson(daemonRes, "Daemon returned error status");
+
+      if (daemonOk) {
         toast.success(`Launched ${playerProtocol.toUpperCase()} via Local Daemon`, {
           description: "CDN stream active",
         });
         return { ok: true };
       }
-      throw new Error("Daemon returned error status");
-    } catch {
+      throw new Error(daemonErr || "Daemon returned error status");
+    } catch (e: any) {
+      const isConnError = !e.message || /fetch|failed to fetch|network|refused/i.test(e.message);
       toast.error("Local daemon connection failed", {
-        description: "Ensure Relay Aemond is running on port 9070 on your machine.",
+        description: isConnError
+          ? "Ensure Relay Aemond is running on port 9070 on your machine."
+          : cleanErrorMessage(e.message),
       });
       return { ok: false, error: "Local daemon connection failed" };
     }

@@ -83,7 +83,7 @@ export async function POST(request: Request) {
         accessToken = await getValidAccessToken(next.account_id, controller.signal);
       } catch (e) {
         const message = e instanceof Error && e.message ? e.message : "Failed to authenticate with TorBox";
-        return NextResponse.json({ error: message }, { status: 502 });
+        return NextResponse.json({ error: message }, { status: 400 });
       }
 
       let cdnUrl: string;
@@ -96,7 +96,7 @@ export async function POST(request: Request) {
         );
       } catch (e) {
         const message = e instanceof Error && e.message ? e.message : "Failed to generate CDN link";
-        return NextResponse.json({ error: message }, { status: 502 });
+        return NextResponse.json({ error: message }, { status: 400 });
       }
 
       const playToken = mintPlayToken({

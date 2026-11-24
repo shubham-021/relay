@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { LOCAL_DAEMON_PLAYERS } from "@/lib/constants";
 import { launchPlayback } from "@/lib/client-play";
+import { safeParseJson, cleanErrorMessage } from "@/lib/utils";
 import { WatchedProgressBar } from "@/components/watched-progress-bar";
 import { AccountBadge } from "@/components/account-badge";
 import { useFileStore } from "@/lib/store";
@@ -78,19 +79,20 @@ interface MoviesGridProps {
   playerProtocol: string;
 }
 
-async function fetchCdnLink(torrentId: number, fileId: number, accountId: number): Promise<string | null> {
+async function fetchCdnLink(torrentId: number, fileId: number, accountId: number): Promise<{ url: string | null; error: string | null }> {
   try {
     const res = await fetch("/api/cdn-link", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ torrent_id: torrentId, file_id: fileId, account_id: accountId }),
     });
-    const data = await res.json();
-    if (!res.ok || !data.url) throw new Error(data.error || "Failed to get CDN link");
-    return data.url;
+    const { ok, data, error } = await safeParseJson<{ url?: string; error?: string }>(res, "Failed to get CDN link");
+    if (!ok || !data?.url) {
+      return { url: null, error: cleanErrorMessage(error || "Failed to get CDN link") };
+    }
+    return { url: data.url, error: null };
   } catch (e: any) {
-    toast.error(e.message || "Failed to get CDN link");
-    return null;
+    return { url: null, error: cleanErrorMessage(e?.message || "Network error. Please check your connection.") };
   }
 }
 
@@ -147,14 +149,17 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
   }, [filtered]);
 
   const handleCopyLink = useCallback(async (movie: MovieItem) => {
-    const cdnUrl = await fetchCdnLink(movie.torrent_id, movie.file_id, movie.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(movie.torrent_id, movie.file_id, movie.account_id);
+    if (!cdnUrl) {
+      toast.error("Failed to copy link", { description: error || "Unable to generate CDN link" });
+      return;
+    }
 
     try {
       await navigator.clipboard.writeText(cdnUrl);
       toast.success("CDN link copied to clipboard");
-    } catch {
-      toast.error("Failed to copy link");
+    } catch (e: any) {
+      toast.error("Failed to copy link", { description: cleanErrorMessage(e?.message || "Clipboard write failed") });
     }
   }, []);
 
@@ -169,8 +174,11 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
 
   const handleSyncplay = useCallback(async (movie: MovieItem) => {
     if (!LOCAL_DAEMON_PLAYERS.includes(playerProtocol)) return;
-    const cdnUrl = await fetchCdnLink(movie.torrent_id, movie.file_id, movie.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(movie.torrent_id, movie.file_id, movie.account_id);
+    if (!cdnUrl) {
+      toast.error("Syncplay launch failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
 
     try {
       const daemonRes = await fetch("http://localhost:9070/syncplay", {
@@ -179,24 +187,31 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
         body: JSON.stringify({ player: playerProtocol, url: cdnUrl }),
       });
 
-      if (daemonRes.ok) {
-        const resData = await daemonRes.json();
+      const { ok, data: resData, error: daemonErr } = await safeParseJson(daemonRes, "Daemon returned error");
+
+      if (ok && resData) {
         toast.success(`Syncplay launched via ${playerProtocol.toUpperCase()}`, {
           description: `Joined room: ${resData.room || "unknown"}`,
         });
         return;
       }
-      throw new Error("Daemon returned error");
+      throw new Error(daemonErr || "Daemon returned error");
     } catch (e: any) {
+      const isConn = !e.message || /fetch|network|refused/i.test(e.message);
       toast.error("Syncplay launch failed", {
-        description: e.message || "Ensure Aemond is running and syncplay.conf is configured.",
+        description: isConn
+          ? "Ensure Aemond is running and syncplay.conf is configured."
+          : cleanErrorMessage(e.message),
       });
     }
   }, [playerProtocol]);
 
   const handleDownload = useCallback(async (movie: MovieItem) => {
-    const cdnUrl = await fetchCdnLink(movie.torrent_id, movie.file_id, movie.account_id);
-    if (!cdnUrl) return;
+    const { url: cdnUrl, error } = await fetchCdnLink(movie.torrent_id, movie.file_id, movie.account_id);
+    if (!cdnUrl) {
+      toast.error("Download failed", { description: error || "Unable to generate CDN link" });
+      return;
+    }
     window.open(cdnUrl, "_blank");
     toast.success("Download started");
   }, []);
@@ -210,13 +225,13 @@ export const MoviesGrid = memo(function MoviesGrid({ movies, isLoading, searchQu
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ torrent_id: deleteTarget.torrent_id, account_id: deleteTarget.account_id }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to delete torrent");
+      const { ok, error } = await safeParseJson(res, "Failed to delete torrent");
+      if (!ok) throw new Error(error || "Failed to delete torrent");
       setDeletedIds((prev) => new Set(prev).add(deleteTarget.id));
       window.dispatchEvent(new CustomEvent("torrent-files-updated"));
       toast.success("Movie deleted", { description: deleteTarget.title });
     } catch (e: any) {
-      toast.error(e.message || "Failed to delete torrent");
+      toast.error("Failed to delete movie", { description: cleanErrorMessage(e?.message) });
     } finally {
       setIsDeleting(false);
       setDeleteTarget(null);

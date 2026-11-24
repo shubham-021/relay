@@ -53,10 +53,11 @@ export async function POST(request: Request) {
       let accessToken: string;
       try {
         accessToken = await getValidAccessToken(account_id, controller.signal);
-      } catch (e: any) {
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : "Failed to authenticate with TorBox";
         return NextResponse.json(
-          { error: e.message || "Failed to authenticate with TorBox" },
-          { status: 502 }
+          { error: message },
+          { status: 400 }
         );
       }
 
@@ -64,10 +65,12 @@ export async function POST(request: Request) {
       let cdnUrl: string;
       try {
         cdnUrl = await requestCdnLink(torrent_id, file_id, accessToken, controller.signal);
-      } catch (e: any) {
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : "Failed to generate CDN link";
+        const isNotFound = /not found|removed/i.test(message);
         return NextResponse.json(
-          { error: e.message || "Failed to generate CDN link" },
-          { status: 502 }
+          { error: message },
+          { status: isNotFound ? 404 : 400 }
         );
       }
 

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { launchPlayback } from "@/lib/client-play";
 import type { ContinueWatchingItem } from "@/lib/types";
 import { useFileStore } from "@/lib/store";
+import { safeParseJson, cleanErrorMessage } from "@/lib/utils";
 
 interface ContinueWatchingRowProps {
   playerProtocol: string;
@@ -29,8 +30,8 @@ export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps
     lastLoadAtRef.current = Date.now();
     try {
       const res = await fetch("/api/library/continue-watching");
-      if (!res.ok) return;
-      const data = await res.json();
+      const { ok, data } = await safeParseJson(res);
+      if (!ok || !data) return;
       setItems(data.items || []);
       setLoaded(true);
     } catch {
@@ -67,12 +68,13 @@ export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ account_id: item.account_id, torrent_id: item.torrent_id, file_id: item.file_id }),
     });
-    if (res.ok) {
+    const { ok, error } = await safeParseJson(res, "Failed to mark as watched");
+    if (ok) {
       toast.success("Marked as watched");
       window.dispatchEvent(new CustomEvent("torrent-files-updated"));
       load();
     } else {
-      toast.error("Failed to mark as watched");
+      toast.error("Failed to mark as watched", { description: cleanErrorMessage(error) });
     }
   };
 
@@ -82,11 +84,12 @@ export function ContinueWatchingRow({ playerProtocol }: ContinueWatchingRowProps
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ account_id: item.account_id, torrent_id: item.torrent_id, file_id: item.file_id }),
     });
-    if (res.ok) {
+    const { ok, error } = await safeParseJson(res, "Failed to remove");
+    if (ok) {
       toast.success("Removed from continue watching");
       load();
     } else {
-      toast.error("Failed to remove");
+      toast.error("Failed to remove", { description: cleanErrorMessage(error) });
     }
   };
 

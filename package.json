@@ -6,7 +6,8 @@
     "dev": "bun --bun run next dev",
     "build": "bun --bun run next build",
     "start": "bun --bun run next start --port 9069",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "bun test tests"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

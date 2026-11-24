@@ -21,6 +21,7 @@ import { AccountBadge } from "@/components/account-badge";
 import { toast } from "sonner";
 import { useFileStore } from "@/lib/store";
 import { getCachedData, setCachedData, clearLibraryCache } from "@/lib/library-cache";
+import { safeParseJson } from "@/lib/utils";
 
 const SEARCH_DEBOUNCE_MS = 700;
 
@@ -174,12 +175,14 @@ export function FileBrowser({ userId, playerProtocol, hasAccounts, accounts: acc
 
         // 3b. Data has updated (200 OK) - update UI and write fresh data + ETag to IndexedDB
         if (res.ok) {
-          const json = await res.json();
-          const items = currentTab === "tv" ? json.shows || [] : json.items || [];
-          const newEtag = res.headers.get("etag");
+          const { data: json } = await safeParseJson(res);
+          if (json) {
+            const items = currentTab === "tv" ? json.shows || [] : json.items || [];
+            const newEtag = res.headers.get("etag");
 
-          applyTabItems(currentTab, currentAccountId, items);
-          await setCachedData(cacheKey, newEtag, items);
+            applyTabItems(currentTab, currentAccountId, items);
+            await setCachedData(cacheKey, newEtag, items);
+          }
         }
       } catch (e) {
         console.error("Library load error:", e);
